@@ -186,7 +186,7 @@ app.whenReady().then(async () => {
       : st.kind === 'available' && !st.downloading ? `Nouvelle version ${st.version} disponible : menu Aide → « Télécharger la mise à jour ».` : null;
     if (!text) return;
     regieWin?.webContents.send('regie:update', { text });
-    if (Notification.isSupported()) { const n = new Notification({ title: 'Régie LED', body: text }); n.on('click', () => (st.kind === 'downloaded' ? updater.restart() : shell.openExternal(RELEASES_URL))); n.show(); }
+    if (Notification.isSupported()) { const n = new Notification({ title: 'Régie LED', body: text }); n.on('click', () => (st.kind === 'downloaded' ? updater.restart() : shell.openExternal(st.url || RELEASES_URL))); n.show(); }
   } });
   refreshMenu();
   for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(ev, refreshMenu);

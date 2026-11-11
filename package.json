@@ -1,7 +1,7 @@
 {
   "name": "regie-led",
   "productName": "Régie LED",
-  "version": "0.2.0-beta.1",
+  "version": "0.2.0-beta.2",
   "description": "Bennani Events Régie LED — pilotage simple d'écrans géants à LED : clips, textes, caméra, effets, conducteur et mapping en formes libres.",
   "private": true,
   "type": "module",
@@ -88,7 +88,17 @@
         "NSAppleEventsUsageDescription": "Régie LED pilote PowerPoint, Word et Excel pour importer des documents et jouer des présentations en direct.",
         "NSScreenCaptureUsageDescription": "Régie LED capture une fenêtre ou un écran pour l'envoyer sur l'écran LED.",
         "CFBundleDisplayName": "Régie LED"
-      }
+      },
+      "extraResources": [
+        {
+          "from": "build/InfoPlist.strings",
+          "to": "fr.lproj/InfoPlist.strings"
+        },
+        {
+          "from": "build/InfoPlist.strings",
+          "to": "en.lproj/InfoPlist.strings"
+        }
+      ]
     },
     "dmg": {
       "sign": false,

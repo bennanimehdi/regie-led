@@ -1,0 +1,3 @@
+/* Nom affiché de l'application (menu, Dock, Finder). Le nom de bundle reste « Regie LED » sans accent : voir package.json. */
+CFBundleName = "Régie LED";
+CFBundleDisplayName = "Régie LED";

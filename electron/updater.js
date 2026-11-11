@@ -9,7 +9,9 @@ const { autoUpdater } = electronUpdater;
 export function setupUpdater({ log, packaged, releasesUrl, parent, onChange }) {
   const mac = process.platform === 'darwin';
   const api = { state: { kind: 'idle' }, check, restart: () => autoUpdater.quitAndInstall() };
-  let manual = false;
+  let manual = false, downloadUrl = releasesUrl;
+  /** Mac : adresse du .dmg de cette architecture dans la release (sinon la page des versions). */
+  const dmgUrl = info => { const f = (info.files || []).find(f => /\.dmg$/.test(f.url) && f.url.includes('-' + process.arch + '.')); return f ? `${releasesUrl}/download/v${info.version}/${f.url}` : releasesUrl; };
   const set = st => { api.state = st; onChange(st); };
 
   autoUpdater.logger = log;
@@ -27,10 +29,11 @@ export function setupUpdater({ log, packaged, releasesUrl, parent, onChange }) {
   autoUpdater.on('update-available', info => {
     log.info('Mises à jour : version ' + info.version + ' disponible');
     if (mac) {
-      set({ kind: 'available', version: info.version, downloading: false });
-      if (manual) dialog.showMessageBox(parent() || undefined, { type: 'info', buttons: ['Ouvrir la page de téléchargement', 'Plus tard'], defaultId: 0, cancelId: 1,
-        message: `Nouvelle version ${info.version} disponible`, detail: 'Sur Mac, télécharge le nouveau .dmg, puis glisse Régie LED dans Applications (tes shows et médias restent dans Documents/Régie LED).' })
-        .then(r => { if (r.response === 0) shell.openExternal(releasesUrl); });
+      downloadUrl = dmgUrl(info);
+      set({ kind: 'available', version: info.version, downloading: false, url: downloadUrl });
+      if (manual) dialog.showMessageBox(parent() || undefined, { type: 'info', buttons: ['Télécharger le .dmg', 'Plus tard'], defaultId: 0, cancelId: 1,
+        message: `Nouvelle version ${info.version} disponible`, detail: 'Sur Mac, le navigateur télécharge le nouveau .dmg : ouvre-le et glisse Régie LED dans Applications (tes shows et médias restent dans Documents/Régie LED).' })
+        .then(r => { if (r.response === 0) shell.openExternal(downloadUrl); });
     } else {
       set({ kind: 'available', version: info.version, downloading: true });
       if (manual) dialog.showMessageBox(parent() || undefined, { type: 'info', message: `Nouvelle version ${info.version} : téléchargement en cours.`, detail: 'Tu seras prévenu quand elle sera prête à installer.' });
@@ -54,7 +57,7 @@ export function setupUpdater({ log, packaged, releasesUrl, parent, onChange }) {
       manual = false; return;
     }
     if (api.state.kind === 'downloaded') { if (fromMenu) api.restart(); return; }
-    if (mac && api.state.kind === 'available' && fromMenu) { shell.openExternal(releasesUrl); manual = false; return; }
+    if (mac && api.state.kind === 'available' && fromMenu) { shell.openExternal(downloadUrl); manual = false; return; }
     autoUpdater.checkForUpdates().catch(e => log.warn('Mises à jour : ' + e.message));
   }
   return api;
