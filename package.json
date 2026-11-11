@@ -1,0 +1,14 @@
+{
+  "name": "ecrans-led",
+  "version": "0.1.0",
+  "description": "Bennani Events Régie LED — pilotage simple d'écrans géants à LED : clips, textes, caméra, effets, conducteur et mapping en formes libres.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node serve.js",
+    "test": "node tests/model.test.js"
+  }
+}

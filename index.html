@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Régie LED — Bennani Events</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="logo.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top">
+  <img class="logo" src="logo.png" alt="Bennani Events">
+  <div class="brand">Régie LED</div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="regie" class="on">Régie</button>
+    <button data-tab="mapping">Mapping</button>
+    <button data-tab="reglages">Réglages</button>
+  </nav>
+  <b class="show-name" id="show-name" title="Show en cours"></b>
+  <span class="save" id="save-state"></span>
+  <div class="spacer"></div>
+  <div class="tempo" title="Tempo : sert aux effets synchronisés (stroboscope, pulsation, flash)">
+    <span class="beat" id="beat-dot"></span>
+    <input id="bpm" type="number" min="20" max="300" step="0.1" aria-label="Tempo en BPM">
+    <span class="unit">BPM</span>
+    <button id="tap" class="btn" title="Tape le tempo en rythme (touche T)">Tap</button>
+    <button id="mic" class="btn" title="Écouter la musique avec le micro : les calques réglés sur « Réaction au son » suivent le volume">Micro</button>
+    <span class="meter"><i id="mic-level"></i></span>
+  </div>
+  <label class="master" title="Niveau général de la sortie">
+    <span>Général</span>
+    <input id="master" type="range" min="0" max="1" step="0.01">
+  </label>
+  <button id="blackout" class="btn big" title="Écran noir (touche B)">Noir</button>
+  <button id="open-out" class="btn big gold">Ouvrir la sortie</button>
+  <span class="out-status" id="out-status">Sortie fermée</span>
+</header>
+
+<main>
+  <section class="view regie" id="view-regie">
+    <div class="resizer" id="lib-resizer" title="Tire pour élargir ou rétrécir la médiathèque (double-clic : largeur d'origine)"></div>
+    <div class="resizer" id="right-resizer" title="Tire pour élargir ou rétrécir le panneau de droite (double-clic : largeur d'origine)"></div>
+    <aside class="panel lib" id="lib"></aside>
+    <div class="center">
+      <div class="monitor" id="monitor">
+        <div class="mon-screen prep" id="mon-prep" hidden><canvas id="preview-prep"></canvas><svg class="mon-ov"></svg><span class="mon-label">Préparation</span></div>
+        <div class="mon-screen out" id="mon-out"><canvas id="preview"></canvas><svg class="mon-ov"></svg><span class="mon-label">Sortie</span><select class="mon-outsel" id="mon-outsel" hidden title="Quelle sortie regarder ici (la LED par défaut)"></select><span class="mon-tag" id="mon-tag"></span></div>
+        <div class="mon-side" id="mon-side"></div>
+      </div>
+      <div class="hresizer" id="mon-resizer" title="Tire vers le bas ou le haut pour agrandir ou réduire les écrans (double-clic : taille d'origine)"></div>
+      <div class="shapebar" id="shapebar" data-shapebar="regie"></div>
+      <div class="shapebar scenebar" id="scenebar"></div>
+      <div class="grid-wrap" id="grid"></div>
+    </div>
+    <aside class="right">
+      <div class="panel cues" id="cues"></div>
+      <div class="panel inspector" id="inspector"></div>
+    </aside>
+  </section>
+  <section class="view mapping" id="view-mapping" hidden></section>
+  <section class="view reglages" id="view-reglages" hidden></section>
+</main>
+
+<input type="file" id="file-input" multiple accept="video/*,image/*,.pdf,.pptx,.ppt,.ppsx,.docx,.doc,.xlsx,.xls" hidden>
+<input type="file" id="import-input" accept="application/json,.json" hidden>
+<div id="out-banner" class="out-banner" hidden>
+  <span>La fenêtre de sortie utilise une ancienne version : elle n'affiche pas les nouveautés (PowerPoint en direct…).</span>
+  <button id="out-fix" class="btn sm gold">Mettre à jour la sortie</button>
+</div>
+<div id="toast" class="toast" hidden></div>
+<div id="lib-peek" class="lib-peek" hidden></div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

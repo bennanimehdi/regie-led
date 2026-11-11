@@ -1,0 +1,10 @@
+# Données de l'utilisateur : jamais versionnées
+media/
+data/
+# Dépendances et constructions
+node_modules/
+dist/
+build/icons/
+# Système et journaux
+.DS_Store
+*.log
