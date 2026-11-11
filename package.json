@@ -1,14 +1,122 @@
 {
-  "name": "ecrans-led",
-  "version": "0.1.0",
+  "name": "regie-led",
+  "productName": "Régie LED",
+  "version": "0.2.0-beta.1",
   "description": "Bennani Events Régie LED — pilotage simple d'écrans géants à LED : clips, textes, caméra, effets, conducteur et mapping en formes libres.",
   "private": true,
   "type": "module",
+  "main": "electron/main.js",
+  "author": {
+    "name": "Bennani Events"
+  },
+  "repository": "github:bennanimehdi/regie-led",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "start": "node serve.js",
+    "electron": "electron .",
+    "icon": "python3 build/make-icon.py",
+    "dist": "electron-builder --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:win": "electron-builder --win --publish never",
     "test": "node tests/model.test.js"
+  },
+  "dependencies": {
+    "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "ma.bennanievents.regieled",
+    "productName": "Regie LED",
+    "copyright": "© Bennani Events",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "serve.js",
+      "index.html",
+      "output.html",
+      "logo.png",
+      "build/icon.png",
+      "js/**",
+      "css/**",
+      "tools/**",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "tools/**"
+    ],
+    "afterPack": "electron/afterPack.cjs",
+    "publish": {
+      "provider": "github",
+      "owner": "bennanimehdi",
+      "repo": "regie-led",
+      "releaseType": "release"
+    },
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Regie-LED-${version}-mac-${arch}.${ext}",
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSCameraUsageDescription": "Régie LED affiche la caméra sur l'écran LED.",
+        "NSMicrophoneUsageDescription": "Régie LED écoute la musique pour les effets réagissant au son.",
+        "NSAppleEventsUsageDescription": "Régie LED pilote PowerPoint, Word et Excel pour importer des documents et jouer des présentations en direct.",
+        "NSScreenCaptureUsageDescription": "Régie LED capture une fenêtre ou un écran pour l'envoyer sur l'écran LED.",
+        "CFBundleDisplayName": "Régie LED"
+      }
+    },
+    "dmg": {
+      "sign": false,
+      "artifactName": "Regie-LED-${version}-mac-${arch}.${ext}",
+      "title": "Régie LED ${version}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Regie-LED-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "installerLanguages": [
+        "fr_FR"
+      ],
+      "language": "1036",
+      "shortcutName": "Régie LED",
+      "uninstallDisplayName": "Régie LED ${version}"
+    }
   }
 }

@@ -51,4 +51,8 @@ M.pruneClips(n);
 assert.ok(n.clips.x); assert.ok(!n.clips.y);
 
 assert.deepEqual(M.hexToRgb('#ff0000'), [1, 0, 0]);
+// Premier lancement (aucun show enregistré) : le show par défaut a bien sa sortie principale et une zone.
+const fresh = M.normalizeShow(null);
+assert.equal(fresh.outputs.length, 1); assert.equal(fresh.outputs[0].id, 'main'); assert.ok(fresh.layers.length >= 1);
+
 console.log('OK — modèle et géométrie');

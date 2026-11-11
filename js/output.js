@@ -12,6 +12,8 @@ import { outputById } from './model.js';
 const outId = new URLSearchParams(location.search).get('out') || 'main';
 const isMain = outId === 'main';
 const hint = document.getElementById('hint');
+// Plein écran : celui demandé par la page, ou, dans l'application de bureau, la fenêtre native qui couvre tout l'écran.
+const isFs = () => !!document.fullscreenElement || (!!window.regieDesktop && outerWidth >= screen.width && outerHeight >= screen.height);
 let eng;
 try { eng = new Engine({ role: 'output' }); }
 catch (e) { hint.textContent = e.message; throw e; }
@@ -86,7 +88,7 @@ requestAnimationFrame(loop);
 
 setInterval(() => bc.postMessage({
   t: 'status', out: outId, w: Math.round(innerWidth * devicePixelRatio), h: Math.round(innerHeight * devicePixelRatio),
-  fs: !!document.fullscreenElement, fps: eng.fps, audioBlocked: !!eng.audioBlocked, cameraError: eng.cameraError || '',
+  fs: isFs(), fps: eng.fps, audioBlocked: !!eng.audioBlocked, cameraError: eng.cameraError || '',
   v: version, noCapture: missingCapture(), linked: !!window.opener,
   via: liveScreens().map(id => (directStream(id) ? 'direct' : window.__ledRemote?.[id] ? 'relais' : 'rien')).join(','), rtc: relay.states().join(' '),
 }), 1000);
@@ -103,7 +105,7 @@ setInterval(() => {
 let hintT;
 function showHint() {
   clearTimeout(hintT);
-  if (document.fullscreenElement) return hint.classList.add('off');
+  if (isFs()) return hint.classList.add('off');
   hint.classList.remove('off');
   hintT = setTimeout(() => hint.classList.add('off'), 8000);
 }
@@ -115,10 +117,11 @@ addEventListener('click', () => {
   // Un clic dans cette fenêtre autorise aussi le son des vidéos et la mesure du niveau (règle des navigateurs).
   if (eng.audioBlocked) { eng.audioBlocked = false; for (const e of eng.sources.values()) e.src.blocked = false; }
   meterCtx();
-  if (!document.fullscreenElement) toggleFs();
+  if (!isFs()) toggleFs();
 });
 addEventListener('keydown', e => { if (e.key === 'f' || e.key === 'F') toggleFs(); });
 document.addEventListener('fullscreenchange', showHint);
+addEventListener('resize', showHint);
 showHint();
 
 let idleT;

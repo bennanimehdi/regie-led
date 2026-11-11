@@ -1,0 +1,63 @@
+# Publication d'une version : pousser un tag `vX.Y.Z` (ou `vX.Y.Z-beta.N` → pré-version).
+#   1. une release GitHub est créée en brouillon ;
+#   2. macOS (dmg + zip, arm64 et x64) et Windows (installeur nsis x64) sont construits et envoyés dedans,
+#      avec latest-mac.yml / latest.yml pour les mises à jour automatiques ;
+#   3. la release est publiée (pré-version si le tag contient « beta », « alpha » ou « rc »).
+name: Publier une version
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  preparer:
+    name: Créer la release (brouillon)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Créer la release en brouillon
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then echo "La release $GITHUB_REF_NAME existe déjà."; exit 0; fi
+          PRE=""; case "$GITHUB_REF_NAME" in *beta*|*alpha*|*rc*) PRE="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" --draft $PRE --title "Régie LED $GITHUB_REF_NAME" --generate-notes
+
+  construire:
+    name: Construire (${{ matrix.os }})
+    needs: preparer
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Construire et envoyer dans la release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          EP_GH_IGNORE_TIME: 'true'
+        run: npx electron-builder --publish always
+
+  publier:
+    name: Publier la release
+    needs: construire
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sortir la release du brouillon
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRE="--prerelease=false"; case "$GITHUB_REF_NAME" in *beta*|*alpha*|*rc*) PRE="--prerelease";; esac
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false $PRE
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'

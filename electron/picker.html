@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>Choisir ce qu'il faut capturer</title>
+<style>
+  body { margin: 0; background: #17171b; color: #f3efe6; font: 14px/1.4 "Helvetica Neue", Arial, sans-serif; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; padding: 14px 18px 8px; }
+  .tabs { display: flex; gap: 6px; padding: 0 18px 10px; }
+  .tabs button, .foot button { background: #26262c; color: inherit; border: 1px solid #3a3a42; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  .tabs button.on { background: #f0b429; color: #111; border-color: #f0b429; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; padding: 0 18px 18px; height: calc(100vh - 128px); overflow: auto; box-sizing: border-box; }
+  .src { background: #202026; border: 2px solid transparent; border-radius: 8px; padding: 6px; cursor: pointer; text-align: center; }
+  .src:hover { border-color: #f0b429; }
+  .src img.th { width: 100%; aspect-ratio: 16/10; object-fit: contain; background: #000; border-radius: 4px; display: block; }
+  .src .n { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .src .n img { width: 16px; height: 16px; }
+  .foot { position: fixed; bottom: 0; left: 0; right: 0; padding: 10px 18px; background: #17171b; border-top: 1px solid #2a2a30; text-align: right; }
+  .empty { padding: 20px; opacity: .7; }
+</style>
+</head>
+<body>
+<h1>Quelle fenêtre ou quel écran envoyer dans la régie ?</h1>
+<div class="tabs"><button id="t-screen" class="on">Écrans</button><button id="t-window">Fenêtres</button></div>
+<div class="grid" id="grid"><div class="empty">Recherche des écrans et des fenêtres…</div></div>
+<div class="foot"><button id="cancel">Annuler</button></div>
+<script>
+  let all = [], mode = 'screen';
+  const grid = document.getElementById('grid');
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function render() {
+    const list = all.filter(s => s.screen === (mode === 'screen'));
+    grid.innerHTML = list.length ? list.map(s => `<div class="src" data-id="${esc(s.id)}"><img class="th" src="${s.thumb}" alt=""><div class="n">${s.icon ? `<img src="${s.icon}" alt="">` : ''}<span>${esc(s.name)}</span></div></div>`).join('')
+      : '<div class="empty">Rien à capturer ici.</div>';
+    document.getElementById('t-screen').classList.toggle('on', mode === 'screen');
+    document.getElementById('t-window').classList.toggle('on', mode === 'window');
+  }
+  window.picker.onSources(list => { all = list; render(); });
+  document.getElementById('t-screen').onclick = () => { mode = 'screen'; render(); };
+  document.getElementById('t-window').onclick = () => { mode = 'window'; render(); };
+  grid.addEventListener('click', e => { const el = e.target.closest('.src'); if (el) window.picker.choose(el.dataset.id); });
+  document.getElementById('cancel').onclick = () => window.picker.choose(null);
+  addEventListener('keydown', e => { if (e.key === 'Escape') window.picker.choose(null); });
+</script>
+</body>
+</html>

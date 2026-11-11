@@ -5,6 +5,31 @@ vidéos, images, textes, caméra, effets, conducteur de soirée et mapping en fo
 
 ## Lancer
 
+### Application de bureau (Mac et Windows) — version bêta
+
+1. Télécharger l'installeur sur la page des versions : **https://github.com/bennanimehdi/regie-led/releases**
+   - Mac Apple Silicon (M1, M2, M3, M4…) : `Regie-LED-<version>-mac-arm64.dmg`
+   - Mac Intel : `Regie-LED-<version>-mac-x64.dmg`
+   - Windows 10/11 (64 bits) : `Regie-LED-<version>-win-x64.exe`
+2. **Mac** : ouvrir le `.dmg`, glisser **Régie LED** dans **Applications** (l'app s'appelle `Regie LED.app` sur le disque, sans accent).
+   L'application n'est pas encore signée par Apple, le Mac la bloque donc la première fois :
+   - macOS 15 ou plus récent : lancer l'app (message « impossible d'ouvrir »), puis **Réglages Système → Confidentialité et sécurité**, descendre jusqu'au message sur Régie LED et cliquer **Ouvrir quand même** ; relancer l'app et confirmer.
+   - macOS 14 et avant : **clic droit** (ou Ctrl+clic) sur l'app → **Ouvrir** → **Ouvrir**.
+   - Si le Mac affirme que l'app est « endommagée », coller dans le Terminal : `xattr -cr "/Applications/Regie LED.app"` puis la rouvrir.
+   Au premier usage de la caméra, du micro, de la capture d'écran ou de PowerPoint, macOS demande une autorisation : accepter.
+3. **Windows** : lancer le `.exe`. SmartScreen affiche « Windows a protégé votre ordinateur » : cliquer **Informations complémentaires → Exécuter quand même**, puis choisir le dossier d'installation.
+   Sur Windows, l'import de PowerPoint/Word/Excel/PDF et le PowerPoint en direct ne sont pas disponibles (ils pilotent les applications du Mac) : exporter les documents en images ou en vidéo. Tout le reste fonctionne.
+
+**Écran LED.** Dans la régie, **Ouvrir la sortie** (ou Cmd/Ctrl+Maj+O) ouvre la sortie **en plein écran sur le premier écran externe** (la sortie HDMI vers le processeur LED, en bureau étendu). Le menu **Sortie → Écran de la sortie** permet de choisir un autre écran ou une simple fenêtre ; Cmd/Ctrl+Maj+F bascule le plein écran, Échap dans la sortie en sort, Cmd/Ctrl+Maj+W ferme la sortie.
+
+**Où sont les shows et les médias.** Dans le dossier **Documents → Régie LED** de l'utilisateur : `data/show.json` (+ `data/backups/`, documents importés, PowerPoint) et `media/`. Menu **Fichier → Ouvrir le dossier des médias** (ou le bouton « Ouvrir le dossier » de la médiathèque). Désinstaller ou mettre à jour l'application ne touche pas à ce dossier.
+
+**Mises à jour.** L'application vérifie au lancement s'il existe une nouvelle version (bêtas comprises) ; menu **Aide → Rechercher une mise à jour**. Sur Windows, elle se télécharge seule et s'installe au redémarrage (menu Aide → « Redémarrer pour installer »). Sur Mac, tant que l'app n'est pas signée par Apple, l'installation automatique est impossible : l'app prévient et renvoie vers la page des versions pour télécharger le nouveau `.dmg` (les shows et médias restent dans Documents).
+
+**Signaler un bug.** Menu **Aide → Signaler un bug…** : le navigateur ouvre un nouveau ticket GitHub déjà rempli (version, système, écrans, fin du journal) ; décrire ce qui s'est passé et envoyer. Le journal complet est dans **Aide → Ouvrir le dossier des journaux** (`regie-led.log`). Sans compte GitHub : envoyer ce fichier et la description par e-mail ou WhatsApp.
+
+### Version navigateur (développeurs)
+
 ```bash
 node serve.js
 ```
@@ -12,7 +37,9 @@ node serve.js
 Sur Mac, un double-clic sur **`Lancer Régie LED.command`** fait la même chose et ouvre Chrome tout seul.
 
 Puis ouvrir **http://localhost:4400** dans **Chrome** (ou Edge). Aucune installation, aucune connexion internet.
-Tout reste sur l'ordinateur : le show dans `data/show.json`, les médias dans `media/`.
+Tout reste sur l'ordinateur : le show dans `data/show.json`, les médias dans `media/` (dans le dossier du code, pas dans Documents).
+
+Développement de l'application de bureau : `npm install`, puis `npm run electron` (lance Electron sur le code du dossier, shows et médias dans Documents/Régie LED), `npm run dist` construit les installeurs dans `dist/`, `npm test` lance les tests. Publier une version : changer `version` dans `package.json`, commit, puis `git tag v<version>` et `git push --tags` : GitHub Actions construit les installeurs Mac et Windows et les publie sur la page des versions (pré-version si le tag contient « beta »).
 
 ## Branchement
 

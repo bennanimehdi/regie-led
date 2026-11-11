@@ -1909,6 +1909,7 @@ async function openOutput(id = 'main') {
   const w = window.open(main ? 'output.html' : 'output.html?out=' + encodeURIComponent(o.id), main ? 'regie-led-sortie' : 'regie-led-sortie-' + o.id, feat);
   if (!w) return toast('Le navigateur a bloqué la fenêtre de sortie : autorise les pop-ups pour cette page.', 'err');
   if (main) outWin = w;
+  if (window.regieDesktop) return toast(`« ${o.name} » ouverte : en plein écran sur l'écran externe s'il y en a un, sinon en fenêtre. Menu Sortie → « Écran de la sortie » pour choisir ; Échap dans la sortie quitte le plein écran.`);
   if (!screens) await loadScreens(true);
   const placed = main ? extScreen() : screenFor(o);
   // Chrome ouvre souvent la fenêtre sur l'écran de la régie malgré la position demandée : on vérifie où elle est et on la déplace
@@ -2890,6 +2891,7 @@ async function boot() {
     multi: id => zoneMulti.has(id), toggleMulti, snapOn: () => snapOn, localGroups, setVertex, insertVertex, deleteVertex, afterEdit: () => { renderShapes(); },
   });
   await loadMedia();
+  window.regieDesktop?.onUpdate?.(m => toast(m.text));                 // application de bureau : mise à jour disponible ou prête
   fetch('/api/version').then(r => r.json()).then(j => { appVersion = j.v || 0; }).catch(() => {});
   setInterval(() => {                       // dépannage : état de la régie, lisible sur le serveur local (/api/diag)
     const streams = Object.fromEntries(Object.entries(window.__ledStreams).map(([id, s]) => { const t = s.getVideoTracks()[0]; return [id, { active: s.active, label: t?.label, state: t?.readyState, muted: t?.muted, size: t ? t.getSettings().width + 'x' + t.getSettings().height : '' }]; }));

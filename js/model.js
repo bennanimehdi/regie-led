@@ -104,7 +104,8 @@ export function defaultShow() {
   const layers = [newLayer('Fond'), newLayer('Média'), newLayer('Titres')];
   const show = {
     name: 'Nouveau show', cols: 8, bpm: 120, comp: { w: 1920, h: 1080 }, output: { w: 1920, h: 1080 },
-    layers, clips: {}, cells: {}, cues: [], slices: [], master: { opacity: 1 }, customOut: false, keys: [], pool: [],
+    layers, clips: {}, cells: {}, cues: [], slices: [], master: { opacity: 1 }, customOut: false, keys: [], pool: [], files: null,
+    outputs: [{ id: 'main', name: 'LED principale', mode: 'comp', zoneId: '', hidden: [], screen: '' }],
   };
   for (const l of layers) show.cells[l.id] = Array(show.cols).fill(null);
   show.scenes = [{ id: uid(), name: 'Scène 1', layers: show.layers, cells: show.cells, cols: show.cols }];
