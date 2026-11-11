@@ -422,3 +422,7 @@ details { margin: 10px 0 4px; } summary { cursor: pointer; color: var(--mut); fo
   .master span, .tempo .unit, .meter, .save { display: none; }
   .map-body { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 260px; }
 }
+/* fenêtre « demander un texte » (askText : remplace prompt(), absent de l'application de bureau) */
+.modal-box.ask { width: min(440px, 92vw); }
+.modal-box.ask .ask-input { width: 100%; font-size: 15px; padding: 10px 12px; margin: 4px 0 14px; }
+.modal-box.ask .ask-btns { display: flex; gap: 8px; justify-content: flex-end; }

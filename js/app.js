@@ -302,8 +302,8 @@ function renderScenes() {
     <button class="btn sm" data-act="scene-rename" title="Renommer la scène ouverte">✎</button><button class="btn sm" data-act="scene-dup" title="Dupliquer la scène ouverte (mêmes calques et clips)">⧉</button><button class="btn sm danger" data-act="scene-del" title="Supprimer la scène ouverte">✕</button>
     <span class="sb-hint">${liveSc ? `La sortie affiche « ${esc(liveSc.name)} » ; « Envoyer » la remplacera par cette scène.` : 'Une scène = une grille de sources. La sortie garde sa scène jusqu\'à « Envoyer ».'}</span>`;
 }
-function renameScene(sc) {
-  const n = prompt('Nom de la scène :', sc.name);
+async function renameScene(sc) {
+  const n = await askText('Nom de la scène', sc.name, { max: 40 });
   if (n && n.trim() && n.trim() !== sc.name) { sc.name = n.trim().slice(0, 40); commit(); renderScenes(); renderCues(); }
 }
 function bindScenes() {
@@ -444,6 +444,20 @@ function openBox(html, cls = '') {
   d.addEventListener('click', e => { if (e.target === d && !d.lock) d.remove(); });
   document.body.append(d);
   return d;
+}
+/** Demande un texte (remplace prompt(), que l'application de bureau ne propose pas). Renvoie la chaîne saisie, ou null si annulé (Échap, clic à côté). */
+function askText(title, def = '', opts = {}) {
+  return new Promise(resolve => {
+    const d = openBox(`<h3>${esc(title)}</h3>${opts.hint ? `<p>${esc(opts.hint)}</p>` : ''}
+      <input type="text" class="ask-input" maxlength="${opts.max || 80}" value="${esc(def)}" spellcheck="false">
+      <div class="row ask-btns"><button class="btn gold" data-ok>${esc(opts.ok || 'OK')}</button><button class="btn" data-cancel>Annuler</button></div>`, 'ask');
+    const inp = d.querySelector('input'); let done = false;
+    const end = v => { if (done) return; done = true; d.remove(); resolve(v); };
+    d.addEventListener('click', e => { if (e.target.closest('[data-ok]')) end(inp.value); else if (e.target.closest('[data-cancel]') || e.target === d) end(null); });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); end(inp.value); } else if (e.key === 'Escape') { e.preventDefault(); end(null); } e.stopPropagation(); });
+    inp.addEventListener('keyup', e => e.stopPropagation());
+    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  });
 }
 /** Choix de plusieurs fichiers de la médiathèque (cases à cocher). Renvoie la liste choisie (vide si annulé). */
 function pickMedia(title, btn) {
@@ -866,7 +880,7 @@ async function apiRename(kind, name, to) {
 /** Renomme le fichier dans media/ et met à jour tous les clips (et diaporamas) qui l'utilisent, dans toutes les scènes. */
 async function renameMedia(name) {
   const m = media.find(x => x.name === name); if (!m) return;
-  const to = prompt('Nouveau nom du fichier :', baseName(name));
+  const to = await askText('Nouveau nom du fichier', baseName(name));
   if (!to || !to.trim() || to.trim() === baseName(name)) return;
   try {
     const r = await apiRename('media', name, to.trim()), nb = baseName(r.name); let n = 0;
@@ -883,7 +897,7 @@ async function renameMedia(name) {
 }
 async function renameDoc(id) {
   const d = docList.find(x => x.id === id); if (!d) return;
-  const to = prompt('Nouveau nom du document :', d.name);
+  const to = await askText('Nouveau nom du document', d.name);
   if (!to || !to.trim() || to.trim() === d.name) return;
   try {
     const r = await apiRename('doc', id, to.trim()); let n = 0;
@@ -894,7 +908,7 @@ async function renameDoc(id) {
   } catch (e) { toast(e.message, 'err'); }
 }
 async function renamePpt(name) {
-  const to = prompt('Nouveau nom du PowerPoint :', baseName(name));
+  const to = await askText('Nouveau nom du PowerPoint', baseName(name));
   if (!to || !to.trim() || to.trim() === baseName(name)) return;
   try {
     const r = await apiRename('ppt', name, to.trim()); let n = 0;
@@ -907,9 +921,9 @@ async function renamePpt(name) {
   } catch (e) { toast(e.message, 'err'); }
 }
 /** Nom affiché d'une source en direct (caméra, carte HDMI) : remplace le nom technique donné par le système. */
-function renameCam(id) {
+async function renameCam(id) {
   const k = camKnown.find(x => x.deviceId === id); if (!k) return;
-  const to = prompt('Nom de cette source :', k.label);
+  const to = await askText('Nom de cette source', k.label, { max: 60 });
   if (!to || !to.trim() || to.trim() === k.label) return;
   const old = k.label; k.label = to.trim().slice(0, 60); k.custom = true; saveCams(); let n = 0;
   for (const c of Object.values(show.clips)) if (c.type === 'camera' && c.deviceId === id) { c.deviceLabel = k.label; if (c.name === old || c.name === old.slice(0, 40)) c.name = k.label.slice(0, 40); n++; }
@@ -1098,7 +1112,7 @@ function bindLib() {
     if (nw === 'gen') addToPool(M.newClip('gen'));
     if (nw === 'screen') addToPool(M.newClip('screen'));
     const poolRen = e.target.closest('[data-ren-pool]')?.dataset.renPool, poolDel = e.target.closest('[data-del-pool]')?.dataset.delPool;
-    if (poolRen) { const c = show.clips[poolRen]; const n = c && prompt('Nom :', clipLabel(c)); if (n && n.trim()) { c.name = n.trim().slice(0, 60); commit(); renderLib(); renderInspector(); } return; }
+    if (poolRen) { const c = show.clips[poolRen]; const n = c && await askText('Nom de l\'élément', clipLabel(c), { max: 60 }); if (n && n.trim()) { c.name = n.trim().slice(0, 60); commit(); renderLib(); renderInspector(); } return; }
     if (poolDel) {
       const c = show.clips[poolDel]; if (!c) return;
       if (!confirm(`Retirer « ${clipLabel(c)} » de la médiathèque ?` + '\n\nLes copies déjà posées dans la grille restent.')) return;
@@ -2718,7 +2732,7 @@ function bindSettings() {
     if (act === 'import') $('#import-input').click();
     if (act === 'new') {
       if (!confirm('Créer un nouveau show vide ? Le show actuel sera remplacé — enregistre-le d\'abord (« Enregistrer sous… ») si tu veux le garder.')) return;
-      const n = prompt('Nom du nouveau show :', 'Nouveau show');
+      const n = await askText('Nom du nouveau show', 'Nouveau show', { max: 60, ok: 'Créer' });
       if (n === null) return;
       replaceShow(M.emptyShow((n || 'Nouveau show').trim().slice(0, 60) || 'Nouveau show'));
       toast('Show vide créé : un calque, aucune source, médiathèque vide. « ＋ Importer » pour tes fichiers (ou « Fichiers déjà importés… »).');
@@ -2727,7 +2741,7 @@ function bindSettings() {
     const outId = e.target.closest('[data-out]')?.dataset.out;
     if (act === 'out-add') {
       if (show.outputs.length >= 6) return toast('6 sorties maximum.', 'err');
-      const n = prompt('Nom de la sortie :', show.outputs.length === 1 ? 'Retour conférenciers' : 'Sortie ' + (show.outputs.length + 1));
+      const n = await askText('Nom de la sortie', show.outputs.length === 1 ? 'Retour conférenciers' : 'Sortie ' + (show.outputs.length + 1), { max: 40, ok: 'Créer' });
       if (n === null) return;
       show.outputs.push(M.newOutput(show, n.trim().slice(0, 40))); commit(); renderSettings(); renderGrid(); renderInspector(); updatePlaying();
       return toast('Sortie créée. Choisis ce qu\'elle montre, son écran, puis « Ouvrir ». Dans chaque calque, « Visible sur » décide ce qui y apparaît.');
@@ -2776,7 +2790,7 @@ function bindSettings() {
 }
 /** « Enregistrer sous… » : copie du show dans un fichier, nom et emplacement au choix (Chrome : vraie fenêtre d'enregistrement ; sinon téléchargement). */
 async function saveShowAs() {
-  const n = prompt('Nom du show :', show.name || 'Show');
+  const n = await askText('Nom du show', show.name || 'Show', { max: 60, ok: 'Enregistrer' });
   if (n === null) return;
   if (n.trim() && n.trim() !== show.name) { show.name = n.trim().slice(0, 60); commit(); updateTop(); const f = $('#set-name'); if (f) f.value = show.name; }
   const file = (show.name || 'show').replace(/[^\p{L}\p{N} _-]/gu, '_') + '.json', json = JSON.stringify(show, null, 1);

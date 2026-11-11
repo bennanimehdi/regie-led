@@ -176,7 +176,10 @@ app.on('window-all-closed', () => app.quit());
 
 app.whenReady().then(async () => {
   fs.mkdirSync(mediaDir, { recursive: true }); fs.mkdirSync(dataDir, { recursive: true });
-  srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0 });
+  // Port fixe : l'adresse de la régie ne change pas d'un lancement à l'autre, donc le navigateur garde ses réglages (sources
+  // en direct connues, largeur des panneaux, aimant…). Si le port est pris (autre instance, serveur de développement), on en prend un libre.
+  try { srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 4410 }); }
+  catch (e) { log.warn(`Port 4410 indisponible (${e.code || e.message}) : port libre au hasard, les réglages du navigateur ne seront pas conservés.`); srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0 }); }
   log.info(`Régie LED ${app.getVersion()} — serveur ${srv.url} — shows : ${dataDir} — médias : ${mediaDir}`);
   setupPermissions();
   createRegieWindow();

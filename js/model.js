@@ -98,7 +98,7 @@ export function emptyShow(name = 'Nouveau show') {
   show.scenes = [{ id: uid(), name: 'Scène 1', layers: show.layers, cells: show.cells, cols: show.cols }];
   show.sceneId = show.scenes[0].id;
   show.slices.push(newSlice(show, 'Écran principal'));
-  return show;
+  return normalizeShow(show);   // ajoute tout ce qu'un show doit avoir (sorties, raccourcis…) : sans ça, l'écran plantait après « Nouveau show »
 }
 export function defaultShow() {
   const layers = [newLayer('Fond'), newLayer('Média'), newLayer('Titres')];
