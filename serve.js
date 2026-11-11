@@ -141,7 +141,8 @@ export function startServer(opts = {}) {
   async function importDoc(req, rawName, maxSide) {
     const ext = path.extname(String(rawName || '')).toLowerCase(), kind = DOCS[ext];
     if (!kind) throw Object.assign(new Error('Type de document non pris en charge (PDF, PowerPoint, Word, Excel).'), { code: 400 });
-    if (process.platform !== 'darwin') throw Object.assign(new Error('La conversion de documents n\'est disponible que sur Mac.'), { code: 400 });
+    if (process.platform === 'win32' && kind !== 'powerpoint') throw Object.assign(new Error('Sur Windows, seuls les PowerPoint peuvent être importés en images : exporte ce document en PDF puis en images, ou importe-le depuis un Mac.'), { code: 400 });
+    if (process.platform !== 'darwin' && process.platform !== 'win32') throw Object.assign(new Error('La conversion de documents n\'est disponible que sur Mac et Windows.'), { code: 400 });
     if (converting) throw Object.assign(new Error('Une conversion est déjà en cours : attends qu\'elle se termine.'), { code: 409 });
     converting = true;
     try {
@@ -155,7 +156,14 @@ export function startServer(opts = {}) {
         req.on('aborted', () => reject(new Error('envoi interrompu')));
       });
       let pdf = src;
-      if (kind !== 'pdf') {
+      if (process.platform === 'win32') {                                   // PowerPoint exporte lui-même chaque diapositive en JPEG
+        try { await runPs('pptexport.ps1', [src, path.join(WORK, 'p-'), String(maxSide), '200', 'JPG'], 250000); }
+        catch (e) {
+          if (/80040154|introuvable|Class not registered/i.test(e.stderr)) throw new Error('PowerPoint est introuvable sur cet ordinateur : installe Microsoft PowerPoint, ou exporte le fichier en images.');
+          if (e.killed) throw new Error('PowerPoint n\'a pas répondu à temps : une fenêtre y attend peut-être une réponse. Regarde dans PowerPoint, puis réessaie.');
+          throw new Error('PowerPoint n\'a pas pu convertir ce fichier. (' + e.stderr.trim().split('\n').pop().slice(0, 160) + ')');
+        }
+      } else if (kind !== 'pdf') {
         pdf = path.join(WORK, id + '.pdf');
         try { await run('osascript', [path.join(TOOLS, 'office2pdf.applescript'), kind, src, pdf], 250000); }
         catch (e) {
@@ -168,8 +176,10 @@ export function startServer(opts = {}) {
         const st = await fsp.stat(pdf).catch(() => null);
         if (!st || !st.size) throw new Error(`${APP_NAME[kind]} n'a produit aucune page. Exporte le fichier en PDF, puis importe le PDF.`);
       }
-      try { await run('osascript', ['-l', 'JavaScript', path.join(TOOLS, 'pdf2img.js'), pdf, path.join(WORK, 'p-'), String(maxSide), '200'], 180000); }
-      catch (e) { throw new Error('Ce PDF n\'a pas pu être lu (fichier protégé ou abîmé ?).'); }
+      if (process.platform === 'darwin') {
+        try { await run('osascript', ['-l', 'JavaScript', path.join(TOOLS, 'pdf2img.js'), pdf, path.join(WORK, 'p-'), String(maxSide), '200'], 180000); }
+        catch (e) { throw new Error('Ce PDF n\'a pas pu être lu (fichier protégé ou abîmé ?).'); }
+      }
       const pages = (await fsp.readdir(WORK)).filter(n => /^p-\d+\.jpg$/.test(n)).sort();
       if (!pages.length) throw new Error('Aucune page trouvée dans ce document.');
       const base = (path.basename(String(rawName).normalize('NFC'), path.extname(rawName)).replace(/[\u0000-\u001f\\/:*?"<>|]/g, '_').trim() || 'Document').slice(0, 60);
@@ -187,23 +197,27 @@ export function startServer(opts = {}) {
     }
   }
 
-  /** Pilote le diaporama PowerPoint en direct. Renvoie {pos, total, cropT, cropB} : position + rognage de la fenêtre capturée. */
+  /** Pilote le diaporama PowerPoint en direct. Renvoie {pos, total, cropT, cropB} : position + rognage de la fenêtre capturée.
+   *  Mac : tools/pptlive.applescript (osascript). Windows : tools/pptlive.ps1 (PowerShell + automation COM). */
   async function pptLive(args) {
-    if (process.platform !== 'darwin') throw Object.assign(new Error('PowerPoint en direct n\'est disponible que sur Mac.'), { code: 400 });
+    if (process.platform !== 'darwin' && process.platform !== 'win32') throw Object.assign(new Error('PowerPoint en direct n\'est disponible que sur Mac et Windows.'), { code: 400 });
     let out;
-    try { out = await run('osascript', [path.join(TOOLS, 'pptlive.applescript'), ...args], 110000); }
+    try { out = await (process.platform === 'darwin' ? run('osascript', [path.join(TOOLS, 'pptlive.applescript'), ...args], 110000) : runPs('pptlive.ps1', args, 110000)); }
     catch (e) {
       if (/aucun diaporama/i.test(e.stderr)) throw Object.assign(new Error('Aucun diaporama en cours dans PowerPoint : clique sur « Relancer le diaporama ».'), { code: 409 });
       if (/-1743|not authorized|pas autoris/i.test(e.stderr)) throw new Error('macOS a bloqué le pilotage de PowerPoint. Ouvre Réglages Système → Confidentialité et sécurité → Automatisation, et autorise PowerPoint pour l\'application qui a lancé la régie.');
+      if (/80040154|introuvable|Class not registered|-600|-10810/i.test(e.stderr)) throw new Error('PowerPoint est introuvable sur cet ordinateur : installe Microsoft PowerPoint pour jouer un diaporama en direct.');
       if (e.killed) throw new Error('PowerPoint n\'a pas répondu : une fenêtre y attend peut-être une réponse.');
       throw new Error('PowerPoint n\'a pas pu exécuter la commande. (' + e.stderr.trim().split('\n').pop().slice(0, 160) + ')');
     }
-    const [pos, total, h] = out.split('/').map(Number);
-    // Fenêtre de 768 points : 32 de barre de titre + 8 de marge, la diapositive, puis 16 en bas (marge + coins arrondis).
+    const [pos, total, h, cap] = out.split('/').map(Number);
+    if (cap > 0 && h > 0) return { pos: pos || 0, total: total || 0, cropT: cap / h, cropB: 0 };   // Windows : barre de titre mesurée par le script
+    // Mac, fenêtre de 768 points : 32 de barre de titre + 8 de marge, la diapositive, puis 16 en bas (marge + coins arrondis).
     const crop = h === 768 ? { cropT: 40 / 768, cropB: 16 / 768 } : { cropT: h > 0 ? 32 / h : 0, cropB: 0 };
     return { pos: pos || 0, total: total || 0, ...crop };
   }
-
+  /** Windows : lance un script PowerShell de tools/ (automation COM d'Office). */
+  const runPs = (script, args, timeout) => run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(TOOLS, script), ...args], timeout);
   async function uniqueName(name) {
     const ext = path.extname(name), base = name.slice(0, name.length - ext.length);
     let cand = name, i = 2;
@@ -360,9 +374,10 @@ export function startServer(opts = {}) {
         const dir = path.join(PRES, '.vignettes'), png = path.join(dir, name + '.png');
         const fresh = await Promise.all([fsp.stat(png), fsp.stat(file)]).then(([a, b]) => a.mtimeMs >= b.mtimeMs).catch(() => false);
         if (!fresh) {
-          if (process.platform !== 'darwin') return send(res, 404, 'Introuvable', 'text/plain; charset=utf-8');
+          if (process.platform !== 'darwin' && process.platform !== 'win32') return send(res, 404, 'Introuvable', 'text/plain; charset=utf-8');
           await fsp.mkdir(dir, { recursive: true });
-          await run('qlmanage', ['-t', '-s', '480', '-o', dir, file], 25000).catch(() => {});
+          if (process.platform === 'darwin') await run('qlmanage', ['-t', '-s', '480', '-o', dir, file], 25000).catch(() => {});
+          else await runPs('pptexport.ps1', [file, path.join(dir, name + '-'), '480', '1', 'PNG'], 60000).then(() => fsp.rename(path.join(dir, name + '-001.png'), png)).catch(() => {});
         }
         return serveFile(req, res, png, false);
       }

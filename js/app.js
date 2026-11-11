@@ -665,7 +665,7 @@ async function pickScreen(clip) {
   let s;
   pickingUntil = Infinity;
   try { s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: true, selfBrowserSurface: 'exclude' }); }   // audio : proposé par Chrome pour un onglet ou un écran entier, pas pour une simple fenêtre
-  catch { pickingUntil = Date.now() + 1500; return toast('Aucune fenêtre choisie. Si Chrome ne propose rien : Réglages Système → Confidentialité et sécurité → Enregistrement de l\'écran → autoriser Google Chrome, puis relancer Chrome.', 'err'); }
+  catch { pickingUntil = Date.now() + 1500; return toast(`Aucune fenêtre choisie. Si rien n'est proposé : Réglages Système → Confidentialité et sécurité → Enregistrement de l'écran → autoriser ${window.regieDesktop ? 'Régie LED' : 'Google Chrome'}, puis relancer l'application.`, 'err'); }
   pickingUntil = Date.now() + 1500;
   attachStream(clip, s);
 }
@@ -1499,7 +1499,7 @@ function clipInspector(c) {
         <p class="note" id="ppt-pos">${esc(pptLabel(c))}</p>
         <div class="row"><button class="btn sm" data-act="ppt-first">Revenir au début</button><button class="btn sm" data-act="ppt-open">Relancer le diaporama</button></div>
         <p class="note">« Suivant » fait comme un clic dans PowerPoint : l'animation suivante, puis la diapositive suivante. Les touches ← et → font la même chose quand ce clip est à l'écran. La fenêtre « Diaporama PowerPoint » peut rester derrière les autres, mais ne la réduis pas dans le Dock et ne la ferme pas.</p>`;
-    } else h += '<p class="note">Chrome te demande quelle fenêtre (ou quel écran) afficher. Le choix est à refaire si tu recharges la régie. La fenêtre peut rester derrière les autres, mais pas réduite dans le Dock.</p>';
+    } else h += '<p class="note">La régie te demande quelle fenêtre (ou quel écran) afficher. Le choix est à refaire si tu recharges la régie. La fenêtre peut rester derrière les autres, mais pas réduite (Dock ou barre des tâches).</p>';
   }
   if (c.type === 'camera') {
     const opts = [['', 'Caméra par défaut'], ...camDevices.map(d => [d.deviceId, d.label || 'Caméra'])];

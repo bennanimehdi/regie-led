@@ -18,7 +18,7 @@ vidéos, images, textes, caméra, effets, conducteur de soirée et mapping en fo
    - Si le Mac affirme que l'app est « endommagée », coller dans le Terminal : `xattr -cr "/Applications/Regie LED.app"` puis la rouvrir.
    Au premier usage de la caméra, du micro, de la capture d'écran ou de PowerPoint, macOS demande une autorisation : accepter.
 3. **Windows** : lancer le `.exe`. SmartScreen affiche « Windows a protégé votre ordinateur » : cliquer **Informations complémentaires → Exécuter quand même**, puis choisir le dossier d'installation.
-   Sur Windows, l'import de PowerPoint/Word/Excel/PDF et le PowerPoint en direct ne sont pas disponibles (ils pilotent les applications du Mac) : exporter les documents en images ou en vidéo. Tout le reste fonctionne.
+   Sur Windows, le **PowerPoint en direct** et l'import de PowerPoint « en images » fonctionnent si Microsoft PowerPoint est installé (piloté par automation). L'import de Word, Excel et PDF n'est pas encore disponible sur Windows : exporter ces documents en images (ou en PowerPoint). Tout le reste fonctionne.
 
 **Écran LED.** Dans la régie, **Ouvrir la sortie** (ou Cmd/Ctrl+Maj+O) ouvre la sortie **en plein écran sur le premier écran externe** (la sortie HDMI vers le processeur LED, en bureau étendu). Le menu **Sortie → Écran de la sortie** permet de choisir un autre écran ou une simple fenêtre ; Cmd/Ctrl+Maj+F bascule le plein écran, Échap dans la sortie en sort, Cmd/Ctrl+Maj+W ferme la sortie.
 
@@ -276,7 +276,8 @@ Outils : `tools/office2pdf.applescript` (ne referme que le document qu'il a ouve
 À l'import d'un `.pptx`, choisir **« En direct »** : la régie garde le fichier (`data/presentations/`), l'ouvre dans PowerPoint et lance
 le diaporama **dans une fenêtre** (1280 × 768 points). Un clip « Fenêtre en direct » est créé ; il reste à cliquer
 **« Choisir la fenêtre à afficher »** et à désigner « Diaporama PowerPoint » dans la liste de Chrome (à refaire après un rechargement
-de la régie). Les boutons Précédent / Suivant du clip, ou les touches ← →, pilotent PowerPoint (`tools/pptlive.applescript`).
+de la régie). Les boutons Précédent / Suivant du clip, ou les touches ← →, pilotent PowerPoint (`tools/pptlive.applescript` sur Mac,
+`tools/pptlive.ps1` sur Windows, par automation COM : même fonctionnement, fenêtre rangée sous le bord bas de l'écran, barre de titre rognée).
 La barre de titre de la fenêtre est rognée automatiquement. À savoir : PowerPoint doit rester ouvert, sa fenêtre ne doit pas être
 réduite dans le Dock, la sortie reçoit la capture de la régie (directement, ou par un relais vidéo local — `js/relay.js`),
 et Chrome doit être autorisé dans Réglages Système → Confidentialité et sécurité → Enregistrement de l'écran.
