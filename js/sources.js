@@ -21,7 +21,7 @@ class Base {
  *  vers le périphérique de sortie choisi dans les Réglages (eng.sinkId ; '' = sortie du Mac). */
 function applyAudio(src, v, clip) {
   // src.gain : suit le fondu du calque (le son d'un clip qui s'efface baisse avec son image, et se coupe à la fin du fondu).
-  const eng = src.eng, vol = eng.role === 'output' && !eng.silent ? Math.min(1, Math.max(0, +clip.volume || 0)) * Math.min(1, Math.max(0, src.gain ?? 1)) : 0;
+  const eng = src.eng, vol = eng.role === 'output' && !eng.silent && !eng.live?.mute ? Math.min(1, Math.max(0, +clip.volume || 0)) * Math.min(1, Math.max(0, src.gain ?? 1)) : 0;
   if (vol > 0 && !src.blocked) { if (v.muted) v.muted = false; if (Math.abs(v.volume - vol) > 0.005) v.volume = vol; }
   else if (!v.muted) v.muted = true;
   const sink = eng.role === 'output' ? (eng.sinkId || '') : '';

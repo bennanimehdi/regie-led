@@ -13,7 +13,8 @@
  *   customOut : false = la sortie HDMI est la composition telle quelle ; true = chaque zone est posée à son `dst`
  *   master: {opacity}
  * }
- * live = { layers:{layerId:{clipId,t0,fade}}, blackout, test, cue, beat0 }   — ce qui joue maintenant
+ * live = { layers:{layerId:{clipId,t0,fade}}, blackout, mute, test, cue, beat0 }   — ce qui joue maintenant (mute : son de sortie coupé)
+ * conductors: [{id, name, cues, pos}], condId — plusieurs conducteurs ; show.cues = la liste du conducteur ouvert (même tableau)
  */
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
@@ -121,6 +122,7 @@ export function defaultShow() {
   show.scenes = [{ id: uid(), name: 'Scène 1', layers: show.layers, cells: show.cells, cols: show.cols }];
   show.sceneId = show.scenes[0].id;
   show.slices.push(newSlice(show, 'Écran principal'));
+  show.conductors = [{ id: uid(), name: 'Conducteur 1', cues: show.cues, pos: -1 }]; show.condId = show.conductors[0].id;
   // Quelques clips prêts à l'emploi pour ne pas démarrer devant une grille vide.
   const put = (li, col, clip) => { show.clips[clip.id] = clip; show.cells[layers[li].id][col] = clip.id; };
   put(0, 0, newClip('gen', { name: 'Plasma or', kind: 'plasma', colorA: '#ffb300', colorB: '#2a0d00' }));
@@ -144,7 +146,9 @@ export function normalizeShow(s) {
   show.comp = dim(show.comp, 1920, 1080);
   show.output = dim(show.output, 1920, 1080);
   show.master = { opacity: clamp(+(show.master?.opacity ?? 1), 0, 1) };
-  show.customOut = show.customOut === true;      // false : la sortie reproduit la composition telle quelle
+  show.customOut = show.customOut === true;
+  // Transition de « Envoyer à la sortie » : fondu (durée en s) ou coupure franche.
+  show.take = { mode: show.take?.mode === 'cut' ? 'cut' : 'fade', dur: clamp(+show.take?.dur >= 0 ? +show.take.dur : 0.5, 0, 10) };      // false : la sortie reproduit la composition telle quelle
   show.audioOut = typeof show.audioOut === 'string' ? show.audioOut : '';          // périphérique de sortie du son ('' = celui du Mac)
   show.audioOutLabel = typeof show.audioOutLabel === 'string' ? show.audioOutLabel : '';
   show.clips = show.clips && typeof show.clips === 'object' ? show.clips : {};
@@ -170,7 +174,12 @@ export function normalizeShow(s) {
   show.scenes = scenes.map(normScene);
   if (!show.scenes.some(sc => sc.id === show.sceneId)) show.sceneId = show.scenes[0].id;
   bindScene(show, show.sceneId);
-  show.cues = (Array.isArray(show.cues) ? show.cues : []).map(c => ({ id: c.id || uid(), name: c.name || 'Séquence', layers: { ...(c.layers || {}) }, fade: +c.fade >= 0 ? +c.fade : 1, auto: +c.auto > 0 ? +c.auto : 0, sceneId: typeof c.sceneId === 'string' ? c.sceneId : '' }));
+  // Conducteurs : chacun sa liste de séquences et sa position. Un show ancien (une seule liste show.cues) en reçoit un.
+  const normCues = list => (Array.isArray(list) ? list : []).filter(c => c && typeof c === 'object').map(c => ({ id: c.id || uid(), name: c.name || 'Séquence', layers: { ...(c.layers || {}) }, fade: +c.fade >= 0 ? +c.fade : 1, auto: +c.auto > 0 ? +c.auto : 0, sceneId: typeof c.sceneId === 'string' ? c.sceneId : '' }));
+  const conds = Array.isArray(show.conductors) && show.conductors.length ? show.conductors : [{ id: show.condId, name: 'Conducteur 1', cues: show.cues, pos: -1 }];
+  show.conductors = conds.filter(c => c && typeof c === 'object').map((c, i) => ({ id: c.id || uid(), name: String(c.name || 'Conducteur ' + (i + 1)).slice(0, 40), cues: normCues(c.cues), pos: Number.isInteger(c.pos) ? c.pos : -1 }));
+  if (!show.conductors.length) show.conductors = [{ id: uid(), name: 'Conducteur 1', cues: [], pos: -1 }];
+  bindConductor(show, show.condId);
   show.pool = (Array.isArray(show.pool) ? show.pool : []).filter((id, i, a) => show.clips[id] && a.indexOf(id) === i);   // éléments créés (texte, effet, diaporama…) rangés dans la médiathèque
   // Médiathèque du show : noms des fichiers (media/), « doc:<id> », « ppt:<nom> ». null = show ancien : tout le dossier est visible.
   show.files = Array.isArray(show.files) ? show.files.filter((f, i, a) => typeof f === 'string' && f && a.indexOf(f) === i) : null;
@@ -191,7 +200,7 @@ export function normalizeShow(s) {
 export const mainOutput = () => ({ id: 'main', name: 'LED principale', mode: 'comp', zoneId: '', hidden: [], screen: '' });
 export function outputById(show, id) { return (show.outputs || []).find(o => o.id === (id || 'main')) || show.outputs?.[0] || mainOutput(); }
 export function newOutput(show, name) { return { id: uid(), name: name || 'Sortie ' + ((show.outputs?.length || 1) + 1), mode: 'comp', zoneId: '', hidden: [], screen: '' }; }
-export function emptyLive() { return { layers: {}, blackout: false, test: false, cue: -1, beat0: Date.now(), sceneId: '' }; }
+export function emptyLive() { return { layers: {}, blackout: false, mute: false, test: false, cue: -1, beat0: Date.now(), sceneId: '' }; }
 
 /** Fait de la scène `id` la scène en cours d'édition : show.layers / cells / cols pointent sur ses tableaux. */
 export function bindScene(show, id) {
@@ -199,6 +208,15 @@ export function bindScene(show, id) {
   show.sceneId = sc.id; show.layers = sc.layers; show.cells = sc.cells; show.cols = sc.cols;
   return sc;
 }
+/** Ouvre le conducteur `id` : show.cues pointe sur sa liste (même tableau). */
+export function bindConductor(show, id) {
+  const c = show.conductors.find(x => x.id === id) || show.conductors[0];
+  show.condId = c.id; show.cues = c.cues;
+  return c;
+}
+export function newConductor(show, name) { return { id: uid(), name: name || 'Conducteur ' + ((show.conductors?.length || 0) + 1), cues: [], pos: -1 }; }
+/** Toutes les séquences de tous les conducteurs. */
+export const allCues = show => (show.conductors || [{ cues: show.cues || [] }]).flatMap(c => c.cues);
 export function sceneById(show, id) { return (show.scenes || []).find(s => s.id === id) || null; }
 /** Calques à afficher pour un état de lecture (la scène qu'il désigne, sinon la scène en cours d'édition). */
 export function layersFor(show, state) { return sceneById(show, state?.sceneId)?.layers || show.layers; }
@@ -212,7 +230,7 @@ export function newScene(show, name) {
 export function pruneClips(show) {
   const used = new Set();
   for (const sc of show.scenes || [{ cells: show.cells }]) for (const row of Object.values(sc.cells)) for (const id of row) if (id) used.add(id);
-  for (const c of show.cues) for (const id of Object.values(c.layers)) if (id) used.add(id);
+  for (const c of allCues(show)) for (const id of Object.values(c.layers)) if (id) used.add(id);
   for (const id of show.pool || []) used.add(id);                                   // éléments créés, gardés dans la médiathèque
   for (const id of Object.keys(show.clips)) if (!used.has(id)) delete show.clips[id];
 }

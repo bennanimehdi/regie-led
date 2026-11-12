@@ -7,7 +7,7 @@ export function buildMenu(ctx) {
   const updateItems = up.kind === 'downloaded'
     ? [{ label: `Redémarrer pour installer la version ${up.version}`, click: () => ctx.restartToUpdate() }]
     : up.kind === 'available' && !up.downloading
-      ? [{ label: `Télécharger la mise à jour (${up.version})…`, click: () => ctx.checkUpdates() }]
+      ? [{ label: `Installer la mise à jour (${up.version})…`, click: () => ctx.checkUpdates() }]
       : [{ label: 'Rechercher une mise à jour…', click: () => ctx.checkUpdates() }];
   const screens = [
     { label: 'Automatique (premier écran externe)', type: 'radio', checked: ctx.outputDisplay() === 'auto', click: () => ctx.setOutputDisplay('auto') },

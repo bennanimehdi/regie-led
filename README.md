@@ -220,6 +220,10 @@ et chaque autre sortie (retours, autres salles), telle qu'elle est envoyée sur 
 carte : le nom, l'état de la fenêtre (fermée, résolution, i/s), « Ouvrir / Rouvrir », ce qu'elle montre (toute la composition ou
 une zone en plein cadre) et les calques visibles (pastilles vertes = visibles, clic pour masquer). « ＋ Sortie » en ajoute une.
 
+Chaque carte (et chaque sortie dans Réglages) a aussi son **écran** : dans l'application de bureau, la liste des écrans branchés
+(« Automatique », un écran précis ou « Fenêtre simple ») ; une sortie déjà ouverte y est déplacée tout de suite, et le choix est
+retenu par sortie (`reglages-bureau.json` → `outputDisplays`). Dans Chrome, après « Détecter les écrans ».
+
 ## Coins libres dans la composition
 
 Barre Formes (ou panneau d'une zone dans Mapping) → **« ⬚ Coins libres »** : chaque coin de la forme se déplace seul (ronds dorés),
@@ -297,6 +301,65 @@ Ce sont des images fixes : ni animations, ni vidéos intégrées. Pour garder le
 les ransomwares → accès contrôlé aux dossiers) ou redirigé vers OneDrive. Au démarrage, l'application vérifie qu'elle peut écrire
 dans « Documents/Régie LED » ; sinon elle range shows et médias dans le dossier personnel (« C:\Users\<nom>\Régie LED ») et le dit
 une fois. Pour garder Documents : autoriser Régie LED dans la protection contre les ransomwares.
+
+## Plus de place pour la grille
+
+« ‹ » dans l'en-tête de la Médiathèque et « › » dans celui du Conducteur masquent ces panneaux : il reste une fine bande verticale
+(« Médiathèque » à gauche, « Conducteur » à droite) qui les rouvre d'un clic. Mémorisé ; raccourci « Masquer / afficher les panneaux
+latéraux ». Une scène peut avoir jusqu'à **20 calques**.
+
+## Espace disque : pas de doublon, nettoyage
+
+- **Import sans doublon** : à l'envoi d'un fichier, la régie calcule son empreinte (SHA-256). Si un fichier au contenu identique est
+  déjà dans `media` (même sous un autre nom), il est réutilisé et rien n'est copié.
+- **Réglages → Espace disque** : taille du dossier (médias, documents, PowerPoint), **« Supprimer les doublons »** (un seul fichier
+  gardé par contenu ; les anciens noms continuent de marcher pour tous les shows grâce à des alias), et **« Mettre à la corbeille »**
+  les fichiers inutilisés depuis 7 / 30 / 60 / 90 / 180 jours. « Utilisé » = dans le show en cours ou dans un show ouvert pendant cette
+  période (chaque enregistrement d'un show met à jour la date de ses fichiers, `data/fichiers.json`).
+- **Nettoyage automatique** (désactivé par défaut) : au démarrage, mise à la corbeille des fichiers inutilisés depuis N jours.
+- Les fichiers enlevés vont dans la **corbeille de l'ordinateur** (application de bureau) ou dans `data/corbeille` (navigateur) :
+  récupérables.
+
+## Mises à jour
+
+Au démarrage, l'application cherche une nouvelle version (aussi : menu Aide). La nouvelle version **remplace** l'ancienne :
+- Windows : téléchargée en arrière-plan ; « Redémarrer maintenant » (ou la fermeture) lance l'installeur en silence, qui désinstalle
+  l'ancienne version et installe la nouvelle, puis la régie redémarre.
+- Mac : « Installer maintenant » télécharge l'archive .zip de la release, et après la fermeture un petit script remplace
+  « Regie LED.app » dans Applications (l'ancienne est gardée de côté et remise en place si la copie échoue), puis relance
+  (`electron/updater.js`, fonctionne sans signature Apple). Si l'application n'est pas dans un dossier modifiable, ou tourne depuis
+  un emplacement temporaire de macOS, la régie propose le .dmg à la place. Shows et médias ne sont jamais touchés.
+
+## Transition de « Envoyer à la sortie »
+
+Sous le bouton « Envoyer à la sortie » : **Fondu** (durée réglable en secondes, 0,5 s par défaut) ou **Coupure** (changement instantané).
+Ce choix s'applique à tout ce que part avec « Envoyer » (ou la touche Entrée) et il est enregistré dans le show. Les séquences
+lancées par Espace / « Suivant » gardent leur propre « Fondu d'entrée ».
+
+## Ordre des séquences
+
+Dans la liste du conducteur, on **glisse une séquence** au-dessus ou au-dessous d'une autre (un trait doré montre où elle va) ;
+↑ ↓ dans ses réglages marchent aussi. La séquence à l'antenne et celle qui est préparée restent les mêmes après le déplacement.
+
+## Plusieurs conducteurs
+
+En haut du panneau Conducteur, un menu choisit le **conducteur ouvert** (« Jour 1 », « Jour 2 », « Plan B »…) : chacun a sa propre liste
+de séquences et retient sa position, tous partagent la même grille, les mêmes scènes et les mêmes médias. Espace / « Suivant »
+déroule le conducteur ouvert ; en changer ne coupe rien à l'écran. Boutons ＋ (nouveau), ✎ (renommer), ⧉ (dupliquer, pratique pour
+un plan B), ✕ (supprimer). Raccourcis : « Ouvrir un conducteur », et « Aller à une séquence » ouvre au besoin le bon conducteur.
+
+## Son de sortie coupé
+
+Bouton **« 🔊 Son »** dans la barre du haut (à côté de « Noir ») : coupe tout le son de sortie (vidéos, sources en direct), sur toutes
+les sorties, sans toucher à l'image ; il passe en rouge « 🔇 Muet ». Un raccourci « Couper / rétablir le son de sortie » est disponible.
+
+## Arrêter / reprendre une capture (PowerPoint en direct, fenêtre)
+
+Dans les réglages d'un clip « Fenêtre en direct » ou PowerPoint en direct : **« ⏸ Arrêter la capture »** lâche la fenêtre (la case
+devient noire ; confirmation si le clip est à l'antenne). Le diaporama reste ouvert dans PowerPoint, à la même diapositive.
+**« ▶ Reprendre la capture »** la rattache : dans l'application Régie LED, la même fenêtre est retrouvée toute seule (titre
+« Diaporama PowerPoint – <fichier> », ou le titre exact noté à la capture), sans fenêtre de choix ; dans Chrome, on la resélectionne.
+Si le diaporama a été fermé : « Relancer le diaporama », puis « Reprendre la capture ».
 
 ## PowerPoint en direct (animations et vidéos conservées)
 

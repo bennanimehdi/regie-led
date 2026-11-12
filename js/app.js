@@ -14,6 +14,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const hex = c => (/^#[0-9a-f]{6}$/i.test(c || '') ? c : '#ffffff');
 const fmtSize = b => (b >= 1e9 ? (b / 1e9).toFixed(1) + ' Go' : b >= 1e6 ? Math.round(b / 1e6) + ' Mo' : Math.max(1, Math.round(b / 1e3)) + ' ko');
 const baseName = n => String(n).replace(/\.[^.]+$/, '');
+const MAX_LAYERS = 20;                    // calques par scène
 
 let show, live, media = [], sel = null, tab = 'regie';
 let eng = null, bc, mapping, outInfo = null, outSeen = 0, outWin = null, screens = null, camDevices = [];
@@ -87,6 +88,7 @@ function restoreLive() {
         if (L?.clipId && show.clips[L.clipId]) l.layers[layer.id] = { clipId: L.clipId, t0: +L.t0 || Date.now(), fade: L.fade, ...(L.pausedAt ? { pausedAt: +L.pausedAt } : {}) };
       }
       l.cue = Number.isInteger(s.live.cue) && s.live.cue < show.cues.length ? s.live.cue : -1;
+      l.mute = !!s.live.mute;                                // son coupé : il le reste après un rechargement
       l.beat0 = +s.live.beat0 || l.beat0;
     }
   } catch { /* rien à reprendre */ }
@@ -131,7 +133,7 @@ function take() {
   for (const l of show.layers) {
     const want = clipOn(prep.layers, l.id), ok = want && show.clips[want] ? want : null;
     if (ok === clipOn(live.layers, l.id) && !live.layers[l.id]?.pausedAt) continue;   // déjà à la sortie : on ne relance pas (sauf s'il attend, en pause)
-    const f = prep.layers[l.id]?.fade;
+    const f = show.take?.mode === 'cut' ? 0 : (show.take?.dur ?? prep.layers[l.id]?.fade);      // transition choisie sous le bouton « Envoyer »
     live.layers[l.id] = { clipId: ok, t0: now, ...(f != null ? { fade: f } : {}) }; n++;
     if (prep.layers[l.id]) prep.layers[l.id] = { ...prep.layers[l.id], t0: now, pausedAt: undefined };   // la préparation se cale sur le mur : même départ (vidéo, compte à rebours)
   }
@@ -183,6 +185,11 @@ function launchColumn(col, direct = false) {
   updatePlaying();
 }
 function toggleBlackout() { live.blackout = !live.blackout; commit(false); updateTop(); }
+/** Son de sortie coupé / rétabli (toutes les sources, toutes les sorties) ; l'image ne bouge pas. */
+function toggleAudioMute() {
+  live.mute = !live.mute; commit(false); updateTop();
+  toast(live.mute ? '🔇 Son de sortie coupé.' : '🔊 Son de sortie rétabli.');
+}
 function cleanup() {
   M.pruneClips(show);
   for (const l of show.layers) { const L = live.layers[l.id]; if (L?.clipId && !show.clips[L.clipId]) live.layers[l.id] = { clipId: null, t0: Date.now() }; }
@@ -233,6 +240,44 @@ function restartClip(clip) {
 
 /* ---------- conducteur ---------- */
 function clearAuto() { clearTimeout(autoTimer); autoTimer = null; autoAt = 0; }
+/** Ouvre un autre conducteur. Rien ne change à l'écran : seule la liste de séquences (et sa position) change. */
+function switchConductor(id) {
+  if (id === show.condId || !show.conductors.some(c => c.id === id)) return;
+  M.bindConductor(show, show.condId).pos = live.cue;          // on retient où on en était
+  clearAuto(); prepCue = null;
+  const c = M.bindConductor(show, id);
+  live.cue = Number.isInteger(c.pos) && c.pos >= 0 && c.pos < c.cues.length ? c.pos : -1;
+  if (sel?.kind === 'cue' && !cueById(sel.id)) sel = null;
+  commit(); renderCues(); renderInspector(); renderGrid();
+  toast(`Conducteur « ${c.name} » : ${c.cues.length} séquence${c.cues.length > 1 ? 's' : ''}. « Suivant » (Espace) déroule cette liste.`);
+}
+async function conductorAction(act) {
+  const cur = M.bindConductor(show, show.condId);
+  if (act === 'cond-new') {
+    const n = await askText('Nouveau conducteur', 'Conducteur ' + (show.conductors.length + 1), { max: 40, ok: 'Créer', hint: 'Par exemple : Jour 2, Plan B (retard), Salle B.' });
+    if (n === null) return;
+    const c = M.newConductor(show, n.trim().slice(0, 40) || undefined); show.conductors.push(c);
+    commit(); switchConductor(c.id);
+  }
+  if (act === 'cond-ren') {
+    const n = await askText('Nom du conducteur', cur.name, { max: 40, ok: 'Renommer' });
+    if (n === null || !n.trim()) return;
+    cur.name = n.trim().slice(0, 40); commit(); renderCues();
+  }
+  if (act === 'cond-dup') {
+    const c = { ...M.newConductor(show, (cur.name + ' (copie)').slice(0, 40)), cues: cur.cues.map(q => ({ ...q, id: M.uid(), layers: { ...q.layers } })) };
+    show.conductors.splice(show.conductors.indexOf(cur) + 1, 0, c);
+    commit(); switchConductor(c.id);
+  }
+  if (act === 'cond-del') {
+    if (show.conductors.length <= 1) return toast('Il faut garder au moins un conducteur.', 'err');
+    if (!confirm(`Supprimer le conducteur « ${cur.name} » et ses ${cur.cues.length} séquence(s) ?\n\nLa grille et les clips ne sont pas touchés.`)) return;
+    const i = show.conductors.indexOf(cur), next = show.conductors[i + 1] || show.conductors[i - 1];
+    switchConductor(next.id);
+    show.conductors.splice(show.conductors.indexOf(cur), 1);
+    cleanup(); commit(); renderCues();
+  }
+}
 function captureCue() {
   const layers = {};
   for (const l of show.layers) layers[l.id] = stage()[l.id]?.clipId || null;      // en mode Préparation : ce qui est dans l'aperçu
@@ -332,7 +377,7 @@ function bindScenes() {
       if (show.scenes.length <= 1) return toast('Il faut garder au moins une scène.', 'err');
       if (!confirm(`Supprimer la scène « ${cur.name} » et sa grille ?` + (live.sceneId === cur.id ? '\n\nElle est à la sortie : le mur passera au noir.' : ''))) return;
       const i = show.scenes.indexOf(cur); show.scenes.splice(i, 1);
-      for (const q of show.cues) if (q.sceneId === cur.id) q.sceneId = '';
+      for (const q of M.allCues(show)) if (q.sceneId === cur.id) q.sceneId = '';
       if (live.sceneId === cur.id) { live.layers = {}; live.sceneId = ''; commit(false); }
       show.sceneId = ''; switchScene(show.scenes[Math.max(0, i - 1)].id);
     }
@@ -683,10 +728,38 @@ async function pickScreen(clip) {
   pickingUntil = Date.now() + 1500;
   attachStream(clip, s);
 }
+/** Arrête la capture d'une fenêtre (PowerPoint en direct ou fenêtre quelconque) : la régie lâche la fenêtre, la case devient noire.
+ *  La fenêtre elle-même reste ouverte (le diaporama reste à sa diapositive) : « Reprendre la capture » la rattache. */
+function stopCapture(clip) {
+  const s = window.__ledStreams[clip.id];
+  if (!s) return;
+  const ids = Object.keys(window.__ledStreams).filter(id => window.__ledStreams[id] === s);      // clips qui partagent cette capture (même PowerPoint)
+  const onAir = ids.some(id => Object.values(live.layers).some(L => L.clipId === id));
+  if (onAir && !confirm('Ce clip est à l\'antenne : le mur deviendra noir à cet endroit.\n\nArrêter la capture quand même ?')) return;
+  const lab = s.getVideoTracks()[0]?.label || 'fenêtre capturée';                     // pour la reprendre ensuite (clips capturés avant cette version)
+  for (const id of ids) { const c = show.clips[id]; if (c && !c.capLabel) c.capLabel = lab; }
+  commit();
+  s.getTracks().forEach(t => t.stop());
+  for (const id of ids) { delete window.__ledStreams[id]; relay.reset(id); }
+  renderInspector(); attachLiveThumbs();
+  toast(clip.ppt ? 'Capture arrêtée. Le diaporama reste ouvert dans PowerPoint, à la même diapositive : « ▶ Reprendre la capture » le rattache.' : 'Capture arrêtée : « ▶ Reprendre la capture » rattache la fenêtre.');
+}
+/** Reprend la capture arrêtée. Dans l'application de bureau, la même fenêtre est retrouvée toute seule (sans fenêtre de choix) ;
+ *  dans un navigateur, on la resélectionne. Les autres clips du même PowerPoint repartent avec. */
+async function resumeCapture(clip) {
+  const want = clip.ppt ? { ppt: baseName(clip.ppt) } : { label: clip.capLabel || '' };
+  try { await window.regieDesktop?.preferCapture?.(want); } catch { /* ancienne version de l'application : fenêtre de choix */ }
+  await pickScreen(clip);
+  const s = window.__ledStreams[clip.id];
+  if (s && clip.ppt) for (const c of Object.values(show.clips)) if (c !== clip && c.ppt === clip.ppt && !window.__ledStreams[c.id]?.active) { window.__ledStreams[c.id] = s; relay.reset(c.id); }
+  if (!s && clip.ppt) toast('Fenêtre du diaporama introuvable : s\'il a été fermé, clique sur « Relancer le diaporama », puis sur « Reprendre la capture ».', 'err');
+}
 /** Associe un flux capturé au clip et montre tout de suite le clip (dans l'aperçu en mode Préparation). */
 function attachStream(clip, s) {
   window.__ledStreams[clip.id]?.getTracks().forEach(t => t.stop());
   window.__ledStreams[clip.id] = s;
+  const lab = s.getVideoTracks()[0]?.label || '';
+  if (lab && clip.capLabel !== lab) { clip.capLabel = lab; commit(); }        // pour retrouver la même fenêtre à la reprise
   s.getVideoTracks()[0]?.addEventListener('ended', () => {
     if (window.__ledStreams[clip.id] === s) { delete window.__ledStreams[clip.id]; relay.reset(clip.id); }
     if (sel?.kind === 'clip' && sel.id === clip.id) renderInspector();
@@ -807,7 +880,8 @@ async function uploadFiles(files) {
   }
   addFiles([...done.map(d => d?.name), ...docs.map(d => d?.id && fileKeyDoc(d))]);
   await loadMedia(); renderLib();
-  if (done.length) toast(done.length > 1 ? done.length + ' médias importés' : 'Média importé');
+  const dups = done.filter(d => d?.dup).length, fresh = done.length - dups;
+  if (done.length) toast((fresh ? (fresh > 1 ? fresh + ' médias importés' : 'Média importé') : '') + (dups ? `${fresh ? ' · ' : ''}${dups > 1 ? dups + ' fichiers étaient' : '1 fichier était'} déjà dans le dossier : réutilisé${dups > 1 ? 's' : ''}, pas de doublon` : ''));
   // Un document va dans la médiathèque (rien dans la grille) : on le pose ensuite où on veut, comme un média.
   const okDocs = docs.filter(d => d?.id);
   if (okDocs.length) toast(okDocs.length > 1 ? `${okDocs.length} documents ajoutés à la médiathèque : glisse-les sur une case ou une forme.` : `« ${baseName(okDocs[0].name)} » (${okDocs[0].pages} page${okDocs[0].pages > 1 ? 's' : ''}) ajouté à la médiathèque : glisse-le sur une case ou une forme.`);
@@ -984,7 +1058,7 @@ function renderLib() {
   const cams = `<div class="lib-sec"><span>Sources en direct</span><button class="btn sm" data-act="cams-detect" title="Rechercher les caméras et cartes de capture branchées">↻ Détecter</button></div>`
     + (camListed().length ? camListed().map(camItem).join('') : `<p class="empty sm">${perShowFiles() ? 'Aucune source en direct dans ce show : « Importer → Fichiers déjà importés… » ou « Capturer une source → En direct ».' : 'Branche une caméra ou une carte de capture HDMI : elle apparaît ici (sinon « Détecter »).'}</p>`);
   $('#lib').innerHTML = `
-    <div class="panel-h"><h3>Médiathèque</h3><div class="lib-menu-wrap"><button class="btn sm gold" data-act="lib-menu" title="Importer des fichiers, capturer une source ou créer un élément">＋ Importer ▾</button>
+    <div class="panel-h"><h3>Médiathèque</h3><button class="btn sm panel-hide" data-act="hide-lib" title="Masquer la médiathèque (plus de place pour la grille)">‹</button><div class="lib-menu-wrap"><button class="btn sm gold" data-act="lib-menu" title="Importer des fichiers, capturer une source ou créer un élément">＋ Importer ▾</button>
       <div class="lib-menu" id="lib-menu" hidden>
         <button data-act="upload"><b>Fichiers de l'ordinateur…</b><small>Vidéos, images, PowerPoint, Word, Excel, PDF (plusieurs à la fois)</small></button>
         <button data-act="capture"><b>⏺ Capturer une source</b><small>Caméra, carte HDMI ou fenêtre : en direct, enregistrer, photo</small></button>
@@ -1108,6 +1182,7 @@ function bindLib() {
   lib.addEventListener('click', async e => {
     const act = e.target.closest('[data-act]')?.dataset.act, nw = e.target.closest('[data-new]')?.dataset.new, del = e.target.closest('[data-del]')?.dataset.del;
     const menu = $('#lib-menu');
+    if (act === 'hide-lib') return togglePanel('lib', true);
     if (act === 'lib-menu') { menu.hidden = !menu.hidden; return; }
     if (menu && !menu.hidden && (act || nw)) menu.hidden = true;        // un choix dans le menu le referme
     if (act === 'upload') $('#file-input').click();
@@ -1292,7 +1367,10 @@ function updatePlaying() {
   }
   // Panneau à côté des écrans, volontairement réduit : « Envoyer » et « Tout arrêter ». (Mode Préparation et Mire : Réglages / Mapping.)
   const pending = prepOn && prepDiffers();
-  $('#mon-side').innerHTML = `${prepOn ? `<button class="btn take${pending ? ' pending' : ''}" data-act="take" title="Envoie à la sortie ce qui est préparé (touche Entrée)">Envoyer à la sortie ▶<small>Entrée</small></button>` : ''}
+  const tk = show.take || { mode: 'fade', dur: 0.5 }, cut = tk.mode === 'cut';
+  $('#mon-side').innerHTML = `${prepOn ? `<button class="btn take${pending ? ' pending' : ''}" data-act="take" title="Envoie à la sortie ce qui est préparé (touche Entrée) — ${cut ? 'coupure franche' : 'fondu de ' + String(tk.dur).replace('.', ',') + ' s'}">Envoyer à la sortie ▶<small>Entrée · ${cut ? 'coupure' : 'fondu ' + String(tk.dur).replace('.', ',') + ' s'}</small></button>
+    <div class="take-tr"><div class="seg"><button class="${cut ? '' : 'on'}" data-act="tr-fade" title="Fondu enchaîné entre l'ancienne et la nouvelle image">Fondu</button><button class="${cut ? 'on' : ''}" data-act="tr-cut" title="Changement instantané, sans fondu">Coupure</button></div>
+      <label class="tr-dur" title="Durée du fondu (secondes)"><input type="number" id="tr-dur" min="0" max="10" step="0.1" value="${tk.dur}"${cut ? ' disabled' : ''}> s</label></div>` : ''}
     <div class="mon-btns"><button class="btn sm" data-act="stop-all">■ Tout arrêter</button>
     <label class="chk" title="Affiche la barre Formes (ajouter, dessiner, fusionner des formes) sous les écrans"><input type="checkbox" id="shapebar-on"${shapeBarOn ? ' checked' : ''}> Formes</label></div>`;
   $('#mon-tag').textContent = live.test ? 'MIRE' : live.blackout ? 'NOIR' : '';
@@ -1317,7 +1395,7 @@ function bindGrid() {
     const act = e.target.closest('[data-act]')?.dataset.act;
     const head = e.target.closest('.l-head'), cell = e.target.closest('.cell'), colBtn = e.target.closest('.g-col[data-col]');
     if (act === 'add-layer') {
-      if (show.layers.length >= 8) return toast('8 calques maximum.', 'err');
+      if (show.layers.length >= MAX_LAYERS) return toast(MAX_LAYERS + ' calques maximum.', 'err');
       const l = M.newLayer('Calque ' + (show.layers.length + 1));
       show.layers.push(l); show.cells[l.id] = Array(show.cols).fill(null);
       sel = { kind: 'layer', id: l.id };
@@ -1430,9 +1508,14 @@ function bindGrid() {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'stop-all') stopAll();
     if (act === 'take') take();
+    if (act === 'tr-fade' || act === 'tr-cut') { show.take = { ...(show.take || { dur: 0.5 }), mode: act === 'tr-cut' ? 'cut' : 'fade' }; commit(); updatePlaying(); }
   });
   $('#mon-outsel')?.addEventListener('change', e => { monOut = e.target.value; renderOutSel(); });
   $('#mon-side').addEventListener('change', e => {
+    if (e.target.id === 'tr-dur') {                          // durée du fondu de « Envoyer »
+      show.take = { ...(show.take || {}), mode: 'fade', dur: M.clamp(Math.round((+e.target.value || 0) * 10) / 10, 0, 10) };
+      commit(); updatePlaying(); return;
+    }
     if (e.target.id !== 'shapebar-on') return;
     shapeBarOn = e.target.checked; try { localStorage.setItem('regieLed.shapebar', shapeBarOn ? '1' : '0'); } catch { /* sans gravité */ }
     applyShapeBar(); if (shapeBarOn) renderShapeBar(); else cancelDraw();
@@ -1441,7 +1524,7 @@ function bindGrid() {
 
 /** Crée un calque dédié à une zone du mapping (appelé depuis l'onglet Mapping). */
 function addLayerForZone(zone) {
-  if (show.layers.length >= 8) return toast('8 calques maximum.', 'err');
+  if (show.layers.length >= MAX_LAYERS) return toast(MAX_LAYERS + ' calques maximum.', 'err');
   const l = M.newLayer(zone.name); l.zone = zone.id;
   show.layers.push(l); show.cells[l.id] = Array(show.cols).fill(null);
   sel = { kind: 'layer', id: l.id };
@@ -1451,12 +1534,14 @@ function addLayerForZone(zone) {
 
 /* ---------- conducteur (affichage) ---------- */
 function renderCues() {
-  const list = show.cues.map((c, i) => `<li class="cue${i === live.cue ? ' current' : ''}${prepOn && i === prepCue ? ' staged' : ''}${sel?.kind === 'cue' && sel.id === c.id ? ' sel' : ''}" data-cue="${i}">
+  const list = show.cues.map((c, i) => `<li class="cue${i === live.cue ? ' current' : ''}${prepOn && i === prepCue ? ' staged' : ''}${sel?.kind === 'cue' && sel.id === c.id ? ' sel' : ''}" data-cue="${i}" draggable="true" title="Glisse pour changer l'ordre ; clic = réglages ; ▶ ou double-clic = lancer">
       <span class="n">${i + 1}</span>
       <div class="cue-txt"><b>${esc(c.name)}</b><small>${esc(cueSummary(c))}${c.auto > 0 ? ' · suite auto ' + c.auto + ' s' : ''}</small></div>
       <button class="cue-go" title="${prepOn ? 'Préparer cette séquence dans l\'aperçu (puis « Envoyer »)' : 'Envoyer cette séquence à l\'écran'}">▶</button></li>`).join('');
   $('#cues').innerHTML = `
-    <div class="panel-h"><h3>Conducteur</h3><button class="btn sm gold" data-act="capture" title="Ajoute ce qui joue en ce moment comme nouvelle séquence">＋ Capturer</button></div>
+    <div class="panel-h"><h3>Conducteur</h3><div><button class="btn sm gold" data-act="capture" title="Ajoute ce qui joue en ce moment comme nouvelle séquence">＋ Capturer</button><button class="btn sm panel-hide" data-act="hide-right" title="Masquer le conducteur et les réglages (plus de place pour la grille)">›</button></div></div>
+    <div class="cond-bar"><select id="cond-sel" title="Conducteur ouvert : Espace / « Suivant » déroule cette liste">${show.conductors.map(c => `<option value="${esc(c.id)}"${c.id === show.condId ? ' selected' : ''}>${esc(c.name)} (${c.cues.length})</option>`).join('')}</select>
+      <button class="btn sm" data-act="cond-new" title="Nouveau conducteur (Jour 2, Plan B…)">＋</button><button class="btn sm" data-act="cond-ren" title="Renommer ce conducteur">✎</button><button class="btn sm" data-act="cond-dup" title="Dupliquer ce conducteur (par exemple pour un plan B)">⧉</button><button class="btn sm danger" data-act="cond-del" title="Supprimer ce conducteur"${show.conductors.length <= 1 ? ' disabled' : ''}>✕</button></div>
     <div class="cue-nav"><button class="btn" data-act="prev" title="Séquence précédente">◀</button>
       <button class="btn next" data-act="next">Suivant ▶<small>Espace</small></button></div>
     <div class="cue-auto" id="cue-auto"></div>
@@ -1466,6 +1551,8 @@ function bindCues() {
   $('#cues').addEventListener('click', e => {
     const act = e.target.closest('[data-act]')?.dataset.act, li = e.target.closest('.cue');
     if (act === 'capture') return captureCue();
+    if (act === 'hide-right') return togglePanel('right', true);
+    if (act?.startsWith('cond-')) return conductorAction(act);
     if (act === 'next') return nextCue();
     if (act === 'prev') return prevCue();
     if (li) {
@@ -1474,6 +1561,40 @@ function bindCues() {
       sel = { kind: 'cue', id: show.cues[i].id };
       renderCues(); renderGrid(); renderInspector();
     }
+  });
+  $('#cues').addEventListener('change', e => { if (e.target.id === 'cond-sel') switchConductor(e.target.value); });
+  // Ordre des séquences à la souris : on glisse une séquence au-dessus ou au-dessous d'une autre.
+  let dragCue = null;
+  const clearMarks = () => $$('#cues .cue.drop-before, #cues .cue.drop-after').forEach(x => x.classList.remove('drop-before', 'drop-after'));
+  $('#cues').addEventListener('dragstart', e => {
+    const li = e.target.closest?.('.cue'); if (!li) return;
+    dragCue = +li.dataset.cue;
+    e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('application/x-led-cue', String(dragCue));
+    li.classList.add('dragging');
+  });
+  $('#cues').addEventListener('dragover', e => {
+    const li = e.target.closest?.('.cue');
+    if (dragCue == null || !li) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+    const r = li.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+    clearMarks(); li.classList.add(after ? 'drop-after' : 'drop-before');
+  });
+  $('#cues').addEventListener('dragleave', e => { if (!e.relatedTarget || !$('#cues').contains(e.relatedTarget)) clearMarks(); });
+  $('#cues').addEventListener('dragend', () => { dragCue = null; clearMarks(); $$('#cues .cue.dragging').forEach(x => x.classList.remove('dragging')); });
+  $('#cues').addEventListener('drop', e => {
+    const li = e.target.closest?.('.cue');
+    if (dragCue == null || !li) return;
+    e.preventDefault();
+    const from = dragCue, r = li.getBoundingClientRect(), after = e.clientY > r.top + r.height / 2;
+    let to = +li.dataset.cue + (after ? 1 : 0);
+    dragCue = null; clearMarks();
+    if (to > from) to--;                                     // l'élément retiré décale ceux qui le suivent
+    if (to === from) return;
+    const curLive = show.cues[live.cue], curPrep = prepCue != null ? show.cues[prepCue] : null;
+    const [moved] = show.cues.splice(from, 1); show.cues.splice(to, 0, moved);
+    live.cue = curLive ? show.cues.indexOf(curLive) : -1;    // la séquence à l'antenne (et celle préparée) restent les mêmes
+    if (curPrep) prepCue = show.cues.indexOf(curPrep);
+    commit(); renderCues(); renderInspector();
   });
   $('#cues').addEventListener('dblclick', e => { const li = e.target.closest('.cue'); if (li && !e.target.closest('.cue-go')) (prepOn ? prepareCue : goCue)(+li.dataset.cue); });
 }
@@ -1542,10 +1663,12 @@ function clipInspector(c) {
   }
   if (c.type === 'screen') {
     const st = window.__ledStreams[c.id], on = st && st.active, hasAudio = on && st.getAudioTracks().length > 0;
-    h += `<p class="live-state${on ? ' on' : ''}">${on ? '● En direct : ' + esc(st.getVideoTracks()[0]?.label || 'fenêtre capturée') + (hasAudio ? ' · avec son' : ' · sans son') : '○ Aucune fenêtre choisie pour l\'instant'}</p>`;
+    h += `<p class="live-state${on ? ' on' : ''}">${on ? '● En direct : ' + esc(st.getVideoTracks()[0]?.label || 'fenêtre capturée') + (hasAudio ? ' · avec son' : ' · sans son') : (c.ppt || c.capLabel) ? '⏸ Capture arrêtée : la case est noire' : '○ Aucune fenêtre choisie pour l\'instant'}</p>`;
     if (hasAudio) h += fRange('clip', 'volume', 'Son (volume)', c.volume, 0, 1, 0.01);
     if (on) h += '<video class="live-thumb" id="live-thumb" muted playsinline autoplay></video>';
-    h += `<button class="btn ${on ? 'sm' : 'gold'}" data-act="pick-screen">${on ? 'Changer de fenêtre…' : 'Choisir la fenêtre à afficher…'}</button>`;
+    if (on) h += `<div class="row"><button class="btn sm" data-act="pick-screen">Changer de fenêtre…</button><button class="btn sm danger" data-act="cap-stop" title="La régie lâche la fenêtre : la case devient noire. ${c.ppt ? 'Le diaporama reste ouvert dans PowerPoint.' : 'La fenêtre reste ouverte.'}">⏸ Arrêter la capture</button></div>`;
+    else if (c.ppt || c.capLabel) h += `<div class="row"><button class="btn gold" data-act="cap-resume" title="Rattache la même fenêtre${window.regieDesktop ? ' (retrouvée automatiquement)' : ''}">▶ Reprendre la capture</button><button class="btn sm" data-act="pick-screen">Choisir une autre fenêtre…</button></div>`;
+    else h += `<button class="btn gold" data-act="pick-screen">Choisir la fenêtre à afficher…</button>`;
     if (c.ppt) {
       h += `<h4>Diaporama PowerPoint</h4><div class="row"><button class="btn" data-act="ppt-prev" title="Touche ←">◀ Précédent</button><button class="btn gold" data-act="ppt-next" title="Touche →">Suivant ▶</button></div>
         <p class="note" id="ppt-pos">${esc(pptLabel(c))}</p>
@@ -1853,6 +1976,8 @@ function bindInspector() {
     }
     if (clip?.type === 'doc' && act.startsWith('doc-')) return docTurn(clip, act.slice(4));
     if (clip && act === 'pick-screen') return pickScreen(clip);
+    if (clip && act === 'cap-stop') return stopCapture(clip);
+    if (clip && act === 'cap-resume') return resumeCapture(clip);
     if (clip?.ppt && act.startsWith('ppt-')) return pptCmd(clip, act.slice(4));
     if (act === 'cams') {
       await listAudio(true);                                 // caméras + entrées audio (les cartes HDMI ont souvent les deux)
@@ -1867,7 +1992,7 @@ function bindInspector() {
         if (!confirm(`Supprimer le calque « ${layer.name} » et ses clips ?`)) return;
         show.layers.splice(show.layers.indexOf(layer), 1);
         delete show.cells[layer.id]; delete live.layers[layer.id]; delete prep.layers[layer.id];
-        for (const q of show.cues) delete q.layers[layer.id];
+        for (const q of M.allCues(show)) delete q.layers[layer.id];
         sel = null; cleanup(); commit(); renderAll();
       }
     }
@@ -1922,6 +2047,7 @@ function micFrame() {
 function updateTop() {
   const sn = $('#show-name'); if (sn) { sn.textContent = show.name || 'Show'; sn.title = `Show en cours : « ${show.name || 'Show'} » (nom modifiable dans Réglages → Show)`; }
   $('#blackout').classList.toggle('on', !!live.blackout);
+  const am = $('#audio-mute'); if (am) { am.classList.toggle('on', !!live.mute); am.textContent = live.mute ? '🔇 Muet' : '🔊 Son'; am.title = live.mute ? 'Son de sortie coupé : clic pour le rétablir' : 'Couper tout le son de sortie (vidéos, sources en direct), sans toucher à l\'image'; }
   $('#mic').classList.toggle('on', micOn);
   $('#mon-tag').textContent = live.test ? 'MIRE' : live.blackout ? 'NOIR' : '';
   if (document.activeElement !== $('#bpm')) $('#bpm').value = show.bpm;
@@ -2009,6 +2135,7 @@ const KEY_ACTIONS = [
   ['prev', 'Séquence précédente'], ['cue', 'Aller à une séquence'], ['scene', 'Ouvrir une scène'], ['black', 'Écran noir (bascule)'],
   ['stop', 'Tout arrêter'], ['eject', 'Arrêter un calque'], ['mute', 'Masquer / afficher un calque'], ['tap', 'Taper le tempo'],
   ['pause', 'Pause / reprise du clip sélectionné'], ['restart', 'Recommencer le clip sélectionné'],
+  ['cond', 'Ouvrir un conducteur'], ['audiomute', 'Couper / rétablir le son de sortie'], ['panels', 'Masquer / afficher les panneaux latéraux'],
 ];
 const KEY_NAMES = { Space: 'Espace', Enter: 'Entrée', Escape: 'Échap', Backspace: '⌫', Delete: 'Suppr', Tab: 'Tab', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
   Minus: '-', Equal: '=', Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']', Backquote: '`', Backslash: '\\', Home: 'Début', End: 'Fin', PageUp: 'Page ↑', PageDown: 'Page ↓' };
@@ -2041,7 +2168,8 @@ function keyTargets(action, sceneId = show.sceneId) {
     return out;
   }
   if (action === 'col') return Array.from({ length: 32 }, (_, i) => [String(i + 1), 'Colonne ' + (i + 1)]);
-  if (action === 'cue') return show.cues.map((c, i) => [c.id, (i + 1) + ' · ' + c.name]);
+  if (action === 'cue') return show.conductors.flatMap(cd => cd.cues.map((c, i) => [c.id, (show.conductors.length > 1 ? cd.name + ' · ' : '') + (i + 1) + ' · ' + c.name]));
+  if (action === 'cond') return show.conductors.map(c => [c.id, c.name]);
   if (action === 'scene') return show.scenes.map(s => [s.id, s.name]);
   if (action === 'eject' || action === 'mute') { const sc = M.sceneById(show, sceneId) || M.sceneById(show, show.sceneId); return sc.layers.map(l => [l.id, l.name]); }
   return [];
@@ -2064,7 +2192,15 @@ function runKey(k, e) {
   else if (a === 'take') take();
   else if (a === 'next') nextCue();
   else if (a === 'prev') prevCue();
-  else if (a === 'cue') { const i = show.cues.findIndex(c => c.id === t); if (i >= 0) (prepOn ? prepareCue : goCue)(i); }
+  else if (a === 'cue') {                                    // la séquence peut être dans un autre conducteur : on l'ouvre d'abord
+    const cd = show.conductors.find(x => x.cues.some(c => c.id === t));
+    if (!cd) return toast('Ce raccourci vise une séquence qui n\'existe plus.', 'err');
+    if (cd.id !== show.condId) switchConductor(cd.id);
+    const i = show.cues.findIndex(c => c.id === t); if (i >= 0) (prepOn ? prepareCue : goCue)(i);
+  }
+  else if (a === 'cond') { if (!show.conductors.some(c => c.id === t)) return toast('Ce raccourci vise un conducteur qui n\'existe plus.', 'err'); switchConductor(t); }
+  else if (a === 'audiomute') toggleAudioMute();
+  else if (a === 'panels') { const hide = !(panelsHidden.lib && panelsHidden.right); togglePanel('lib', hide); togglePanel('right', hide); }
   else if (a === 'scene') switchScene(t);
   else if (a === 'black') toggleBlackout();
   else if (a === 'stop') stopAll();
@@ -2151,7 +2287,24 @@ function keysPanel() {
     <p class="note">Un raccourci marche depuis n'importe quelle scène. Pour une colonne ou un calque, il vise une scène précise : si une autre scène est ouverte, la régie ouvre d'abord la bonne puis agit (par ex. <kbd>1</kbd> = colonne 1 de « Scène 1 », même depuis « Scène 2 »). Un raccourci personnalisé passe avant les raccourcis d'origine ; une touche ne porte qu'un raccourci. Les touches sont ignorées quand tu écris dans un champ. Chaque clip a aussi « Raccourci » dans ses réglages.</p>`;
 }
 /* ---------- largeur des panneaux : poignées à tirer, mémorisées ---------- */
+/* ---------- panneaux latéraux masquables : plus de place pour la grille ---------- */
+let panelsHidden = { lib: false, right: false };
+try { panelsHidden = { ...panelsHidden, ...JSON.parse(localStorage.getItem('regieLed.panels') || '{}') }; } catch { /* réglage par défaut */ }
+function applyPanels() {
+  const v = $('#view-regie');
+  v.classList.toggle('nolib', !!panelsHidden.lib); v.classList.toggle('noright', !!panelsHidden.right);
+  $('#lib-strip').hidden = !panelsHidden.lib; $('#right-strip').hidden = !panelsHidden.right;
+  renderShapes();
+}
+function togglePanel(k, hide = !panelsHidden[k]) {
+  panelsHidden[k] = hide;
+  try { localStorage.setItem('regieLed.panels', JSON.stringify(panelsHidden)); } catch { /* sans gravité */ }
+  applyPanels();
+}
 function bindResizers() {
+  applyPanels();
+  $('#lib-strip').addEventListener('click', () => togglePanel('lib', false));
+  $('#right-strip').addEventListener('click', () => togglePanel('right', false));
   const view = $('#view-regie');
   // Hauteur des écrans Préparation / Sortie : poignée sous les écrans, mémorisée.
   // Chaque écran (Préparation, Sortie) a sa propre hauteur, réglée par la poignée de son coin bas-droit ; la largeur suit (16:9).
@@ -2218,6 +2371,7 @@ function bindTop() {
   $('#mic').addEventListener('click', toggleMic);
   $('#master').addEventListener('input', e => { show.master.opacity = +e.target.value; commit(); });
   $('#blackout').addEventListener('click', toggleBlackout);
+  $('#audio-mute').addEventListener('click', toggleAudioMute);
   $('#open-out').addEventListener('click', openOutput);
   $('#out-fix').addEventListener('click', async () => {
     if (!refreshOutput()) await openOutput();          // la recharger sur place, sinon en ouvrir une neuve
@@ -2418,7 +2572,7 @@ function mergeShapes() {
   const at = Math.min(...zs.map(o => show.slices.indexOf(o)));
   for (const o of zs) { for (const l of zoneLayers(o.id)) l.zone = z.id; show.slices.splice(show.slices.indexOf(o), 1); }   // rien n'est perdu : les calques suivent
   show.slices.splice(at, 0, z);
-  if (!zoneLayers(z.id).length && show.layers.length < 8) { const l = M.newLayer(z.name); l.zone = z.id; show.layers.push(l); show.cells[l.id] = Array(show.cols).fill(null); }
+  if (!zoneLayers(z.id).length && show.layers.length < MAX_LAYERS) { const l = M.newLayer(z.name); l.zone = z.id; show.layers.push(l); show.cells[l.id] = Array(show.cols).fill(null); }
   zoneMulti.clear(); zoneSel = z.id; const l0 = zoneLayers(z.id)[0]; if (l0) sel = { kind: 'layer', id: l0.id };
   cleanup(); commit(); renderAll(); mapping?.select(z.id);
   toast(`${zs.length} formes fusionnées en « ${z.name} » : une seule zone, ses sommets restent modifiables.`);
@@ -2442,7 +2596,7 @@ function splitShape() {
   });
   show.slices.splice(show.slices.indexOf(z), 1);
   for (const l of zoneLayers(z.id)) l.zone = made[0].id;                       // les calques restent sur le premier morceau
-  for (const n of made.slice(1)) if (show.layers.length < 8) { const l = M.newLayer(n.name); l.zone = n.id; show.layers.push(l); show.cells[l.id] = Array(show.cols).fill(null); }
+  for (const n of made.slice(1)) if (show.layers.length < MAX_LAYERS) { const l = M.newLayer(n.name); l.zone = n.id; show.layers.push(l); show.cells[l.id] = Array(show.cols).fill(null); }
   zoneMulti.clear(); zoneSel = made[0].id; const l0 = zoneLayers(made[0].id)[0]; if (l0) sel = { kind: 'layer', id: l0.id };
   cleanup(); commit(); renderAll(); mapping?.select(made[0].id);
   toast(`Fusion défaite : ${made.length} formes séparées (« ${made[0].name} » garde les calques).`);
@@ -2460,7 +2614,7 @@ function shapeAutoName(shape) {
 }
 /** Crée une forme (zone + calque dédié) et la sélectionne. `src` : cadre en px composition ; `poly` : points d'une forme libre. */
 function createZone(shape, src, poly) {
-  if (show.layers.length >= 8) { toast('8 calques maximum : supprime un calque ou une forme avant d\'en ajouter une.', 'err'); return null; }
+  if (show.layers.length >= MAX_LAYERS) { toast(MAX_LAYERS + ' calques maximum : supprime un calque ou une forme avant d\'en ajouter une.', 'err'); return null; }
   const z = M.newSlice(show, shapeAutoName(shape));
   z.shape = shape; if (poly) z.poly = poly;
   z.src = { ...src, rot: +src.rot || 0 };
@@ -2488,7 +2642,7 @@ function drawSvg() {
 }
 function startDraw() {
   if (tab !== 'regie' && tab !== 'mapping') return;
-  if (show.layers.length >= 8) return toast('8 calques maximum : supprime un calque ou une forme avant d\'en dessiner une.', 'err');
+  if (show.layers.length >= MAX_LAYERS) return toast(MAX_LAYERS + ' calques maximum : supprime un calque ou une forme avant d\'en dessiner une.', 'err');
   if (tab === 'regie' && !shapesOn) { shapesOn = true; try { localStorage.setItem('regieLed.shapes', '1'); } catch { /* sans gravité */ } renderShapes(); }
   drawing = { pts: [], down: null, moved: false };
   renderShapeBar(); renderDraw();
@@ -2606,7 +2760,7 @@ function delShape() {
     if (show.layers.length <= 1) { l.zone = ''; continue; }
     show.layers.splice(show.layers.indexOf(l), 1);
     delete show.cells[l.id]; delete live.layers[l.id]; delete prep.layers[l.id];
-    for (const q of show.cues) delete q.layers[l.id];
+    for (const q of M.allCues(show)) delete q.layers[l.id];
   }
   zoneSel = null;
   if (sel?.kind === 'layer' && !layerById(sel.id)) sel = null;
@@ -2616,7 +2770,7 @@ function delShape() {
 function dropOnZone(z, clip) {
   let l = zoneLayers(z.id)[0];
   if (!l) {
-    if (show.layers.length >= 8) return toast('8 calques maximum.', 'err');
+    if (show.layers.length >= MAX_LAYERS) return toast(MAX_LAYERS + ' calques maximum.', 'err');
     l = M.newLayer(z.name); l.zone = z.id; show.layers.push(l); show.cells[l.id] = Array(show.cols).fill(null);
   }
   sel = { kind: 'layer', id: l.id };
@@ -2853,7 +3007,7 @@ function setTab(t) {
   for (const v of ['regie', 'mapping', 'reglages', 'outputs']) $('#view-' + v).hidden = v !== t;
   if (t === 'outputs') renderOutputsView();
   if (t === 'mapping') mapping.render();
-  if (t === 'reglages') renderSettings();
+  if (t === 'reglages') { renderSettings(); loadStorage(); }
   if (t === 'regie') { if (zoneSel && !zoneById(zoneSel)) zoneSel = null; renderGrid(); renderShapeBar(); renderShapes(); }
 }
 function renderSettings() {
@@ -2880,9 +3034,11 @@ function renderSettings() {
       <div><kbd>T</kbd> Taper le tempo</div><div><kbd>←</kbd> <kbd>→</kbd> PowerPoint en direct : précédent / suivant</div><div><kbd>Échap</kbd> Désélectionner</div><div><kbd>F</kbd> Plein écran (dans la fenêtre de sortie)</div>
       <div><kbd>←↑↓→</kbd> Mapping : déplacer la zone de 1 px (<kbd>Maj</kbd> = 10 px)</div>
       <div id="keys-custom">${keysPanel()}</div></div></div>
+    <div class="panel"><div class="panel-h"><h3>Espace disque</h3><button class="btn sm" data-act="storage-refresh" title="Recalculer">↻</button></div><div class="fields" id="storage-panel"><p class="note">Calcul en cours…</p></div></div>
     <div class="panel"><div class="panel-h"><h3>Formats conseillés</h3></div><div class="fields">
       <p class="note">Vidéos : <b>MP4 (H.264)</b>, 1080p, 25 ou 30 i/s — c'est le format le plus fluide. MOV et WebM fonctionnent aussi ; ProRes et HAP ne sont pas lus par le navigateur. Documents : <b>PowerPoint, Word, Excel et PDF</b> sont convertis en images fixes, une par diapositive ou par page (sans animations). Images : PNG (la transparence est conservée, idéal pour les logos), JPG, WebP, SVG. Captures (« ⏺ Capturer une source ») : MP4 H.264 quand Chrome sait l'écrire, sinon WebM ; photos en JPG.</p></div></div>
   </div>`;
+  if (storageInfo) renderStorage();                      // le panneau Espace disque garde son contenu entre deux affichages
 }
 /* ---------- onglet Outputs : ce qui sort sur chaque écran, en direct ---------- */
 /** Nouvelle sortie (Réglages ou onglet Outputs). */
@@ -2910,6 +3066,7 @@ function renderOutputsView() {
           <span class="oc-badge">${main ? 'MASTER · spectateurs' : 'Sortie ' + (show.outputs.indexOf(o) + 1)}</span>
           <button class="btn sm${on ? '' : ' gold'}" data-act="out-open" data-out="${esc(o.id)}">${on ? 'Rouvrir' : 'Ouvrir'}</button></div>
         <div class="oc-screen"><canvas data-outcv="${esc(o.id)}"></canvas><span class="oc-st" data-outst="${esc(o.id)}">${esc(outputStatus(o))}</span></div>
+        <div class="oc-f">${screenSelect(o)}</div>
         <div class="oc-f">${main ? '<span class="note">Toute la composition, avec le mapping (onglet Mapping) et le son.</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie"><option value="comp"${o.mode !== 'zone' ? ' selected' : ''}>Toute la composition</option>${zones.map(z => `<option value="zone:${esc(z.id)}"${o.mode === 'zone' && o.zoneId === z.id ? ' selected' : ''}>Zone « ${esc(z.name)} » en plein cadre</option>`).join('')}</select>`}</div>
         <div class="oc-layers">${layers.map(l => `<label class="chip${o.hidden.includes(l.id) ? '' : ' on'}" title="${o.hidden.includes(l.id) ? 'Masqué sur cette sortie : clic pour l\'afficher' : 'Visible sur cette sortie : clic pour le masquer'}"><input type="checkbox" data-outlayer="${esc(o.id)}|${esc(l.id)}"${o.hidden.includes(l.id) ? '' : ' checked'}>${esc(l.name)}</label>`).join('')}</div>
       </div>`;
@@ -2921,9 +3078,11 @@ function bindOutputsView() {
     const act = e.target.closest('[data-act]')?.dataset.act, id = e.target.closest('[data-out]')?.dataset.out;
     if (act === 'out-add') return addOutputAsk();
     if (act === 'out-open' && id) return openOutput(id);
+    if (act === 'screens') return loadScreens(true).then(() => { renderOutputsView(); if (!screens) toast('Détection des écrans indisponible ou refusée sur ce navigateur.', 'err'); });
   });
   v.addEventListener('change', e => {
     const t = e.target;
+    if (t.dataset.outscreen) return setOutputScreen(t.dataset.outscreen, t.value);
     if (t.dataset.outlayer) {
       const [oid, lid] = t.dataset.outlayer.split('|'), o = M.outputById(show, oid);
       o.hidden = o.hidden.filter(x => x !== lid); if (!t.checked) o.hidden.push(lid);
@@ -2949,6 +3108,35 @@ function drawOutputsView() {
   }
   eng.hideLayers = null;
 }
+/* ---------- écran de chaque sortie : application de bureau (écrans vus par le Mac / PC) ou navigateur (détection des écrans) ---------- */
+function screenSelect(o) {
+  const main = o.id === 'main', D = window.regieDesktop;
+  if (D?.displays) {
+    let info = { list: [], choice: {} }; try { info = D.displays(); } catch { /* ancienne version */ }
+    const cur = String(info.choice?.[o.id] ?? 'auto');
+    return `<label class="oc-scr" title="Écran sur lequel cette sortie s'affiche (une sortie ouverte y est déplacée tout de suite)">Écran <select data-outscreen="${esc(o.id)}">
+      <option value="auto"${cur === 'auto' ? ' selected' : ''}>${main ? 'Automatique (premier écran externe)' : 'Choisir à l\'ouverture'}</option>
+      ${info.list.map(d => `<option value="${d.id}"${cur === String(d.id) ? ' selected' : ''}>${esc(d.label)}${d.regie ? ' — écran de la régie' : ''}</option>`).join('')}
+      <option value="window"${cur === 'window' ? ' selected' : ''}>Fenêtre simple (pas de plein écran)</option></select></label>`;
+  }
+  if (!screens) return `<label class="oc-scr">Écran <button class="btn sm" data-act="screens" title="Autoriser la détection des écrans pour choisir celui de chaque sortie">Détecter les écrans</button></label>`;
+  const cur = main ? (localStorage.getItem('regieLed.screen') || '') : (o.screen || '');
+  return `<label class="oc-scr" title="Écran sur lequel cette sortie s'ouvre">Écran <select data-outscreen="${esc(o.id)}"><option value="">${main ? 'Automatique (2e écran)' : 'Choisir à la main'}</option>
+    ${screens.screens.map(sc => `<option value="${esc(sc.label)}"${cur === sc.label ? ' selected' : ''}>${esc(sc.label || 'Écran')} — ${sc.width}×${sc.height}${sc === screens.currentScreen ? ' (celui-ci)' : ''}</option>`).join('')}</select></label>`;
+}
+/** Change l'écran d'une sortie ; si elle est ouverte, elle y est déplacée. */
+function setOutputScreen(id, v) {
+  const o = M.outputById(show, id), D = window.regieDesktop;
+  if (D?.setOutputDisplay) { D.setOutputDisplay(o.id, v); toast(`« ${o.name} » : ${v === 'auto' ? 'écran automatique' : v === 'window' ? 'fenêtre simple' : 'écran choisi'}${outIsOpen(o.id) ? ', déplacée.' : ' (à l\'ouverture).'}`); return; }
+  if (o.id === 'main') { if (v) localStorage.setItem('regieLed.screen', v); else localStorage.removeItem('regieLed.screen'); }
+  else { o.screen = v; commit(); }
+  if (outIsOpen(o.id)) {                                       // navigateur : on déplace la fenêtre déjà ouverte
+    const s2 = o.id === 'main' ? extScreen() : screenFor(o);
+    try { const w = window.open('', o.id === 'main' ? 'regie-led-sortie' : 'regie-led-sortie-' + o.id); if (w && w !== window && s2) { w.moveTo(s2.availLeft, s2.availTop); w.resizeTo(s2.availWidth, s2.availHeight); } } catch { /* déplacement refusé */ }
+    toast(`« ${o.name} » déplacée : clique dedans pour le plein écran.`);
+  }
+}
+window.regieDesktop?.onDisplaysChanged?.(() => { if (tab === 'outputs') renderOutputsView(); if (tab === 'reglages') renderSettings(); });
 /** Liste des sorties dans Réglages : nom, ce qu'elle montre, écran, ouvrir, supprimer. */
 function outputsPanel() {
   const zones = show.slices.filter(z => !zoneIsFull(z));
@@ -2959,14 +3147,67 @@ function outputsPanel() {
       <span class="out-dot" title="${on ? 'Ouverte' : 'Fermée'}"></span>
       <input type="text" data-out-f="name" data-out="${esc(o.id)}" value="${esc(o.name)}" title="Nom de la sortie">
       ${main ? '<span class="out-what">LED : mapping (onglet Mapping) + son</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie"><option value="comp"${o.mode !== 'zone' ? ' selected' : ''}>Toute la composition</option>${zones.map(z => `<option value="zone:${esc(z.id)}"${o.mode === 'zone' && o.zoneId === z.id ? ' selected' : ''}>Zone « ${esc(z.name)} » en plein cadre</option>`).join('')}</select>`}
-      ${main ? '' : scrOpts(o)}
+      ${screenSelect(o)}
       <span class="out-st">${on ? `${inf.w}×${inf.h}${inf.fs ? '' : ' · fenêtre'}` : (o.hidden.length ? `${o.hidden.length} calque${o.hidden.length > 1 ? 's' : ''} masqué${o.hidden.length > 1 ? 's' : ''}` : '')}</span>
       <button class="btn sm${on ? '' : ' gold'}" data-act="out-open" data-out="${esc(o.id)}">${on ? 'Rouvrir' : 'Ouvrir'}</button>
       ${main ? '' : `<button class="x" data-act="out-del" data-out="${esc(o.id)}" title="Supprimer cette sortie">✕</button>`}</div>`;
   }).join('')}</div>`;
 }
+/* ---------- espace disque : doublons et fichiers inutilisés ---------- */
+const fmtMo = n => (n >= 1e9 ? (n / 1e9).toFixed(1).replace('.', ',') + ' Go' : Math.max(n ? 0.1 : 0, n / 1e6).toFixed(n >= 1e8 ? 0 : 1).replace('.', ',') + ' Mo');
+let storageInfo = null, cleanDays = 30;
+async function loadStorage() {
+  const el = $('#storage-panel'); if (!el) return;
+  try { storageInfo = await (await fetch('/api/storage')).json(); } catch { el.innerHTML = '<p class="note">Impossible de lire l\'espace disque (serveur local injoignable).</p>'; return; }
+  renderStorage();
+}
+function renderStorage() {
+  const el = $('#storage-panel'), st = storageInfo; if (!el || !st) return;
+  const all = [...st.media.map(m => ({ ...m, kind: 'Média' })), ...st.docs.map(d => ({ ...d, kind: 'Document' })), ...st.ppt.map(x => ({ ...x, kind: 'PowerPoint' }))];
+  const sum = l => l.reduce((a, x) => a + x.size, 0), limit = Date.now() - cleanDays * 86400000;
+  const old = all.filter(x => !x.used && x.lastUsed < limit), dupSize = st.dups.reduce((a, g) => a + g.size, 0), dupN = st.dups.reduce((a, g) => a + g.drop.length, 0);
+  const day = t => new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+  el.innerHTML = `<p><b>${fmtMo(sum(all))}</b> dans le dossier de la régie — médias ${fmtMo(sum(st.media))}, documents ${fmtMo(sum(st.docs))}, PowerPoint ${fmtMo(sum(st.ppt))}.</p>
+    <div class="st-row"><span>${dupN ? `<b>${dupN}</b> fichier${dupN > 1 ? 's' : ''} en double (${fmtMo(dupSize)})` : 'Aucun doublon'}</span>${dupN ? '<button class="btn sm gold" data-act="storage-dedupe">Supprimer les doublons</button>' : ''}</div>
+    <div class="st-row"><span>Inutilisés depuis plus de <select id="clean-days">${[7, 30, 60, 90, 180].map(d => `<option value="${d}"${d === cleanDays ? ' selected' : ''}>${d} jours</option>`).join('')}</select> : <b>${old.length}</b> (${fmtMo(sum(old))})</span>${old.length ? '<button class="btn sm danger" data-act="storage-clean">Mettre à la corbeille</button>' : ''}</div>
+    <label class="f"><span>Nettoyage automatique</span><select id="auto-clean"><option value="0"${!st.autoClean ? ' selected' : ''}>Jamais</option>${[30, 60, 90, 180].map(d => `<option value="${d}"${st.autoClean === d ? ' selected' : ''}>Au démarrage : inutilisés depuis ${d} jours</option>`).join('')}</select></label>
+    <p class="note">« Utilisé » = dans le show en cours, ou dans un show ouvert pendant cette période (chaque show ouvert met à jour ses fichiers). Les fichiers enlevés vont dans la <b>corbeille de l'ordinateur</b> : récupérables tant qu'elle n'est pas vidée. Un fichier déjà présent n'est plus jamais copié une deuxième fois à l'import.</p>
+    <details><summary>Détail (${all.length} fichiers, du plus lourd au plus léger)</summary><div class="st-list">${all.sort((a, b) => b.size - a.size).map(x => `<div class="st-item${x.used ? ' used' : ''}"><span>${esc(x.name)}</span><small>${x.kind} · ${fmtMo(x.size)} · ${x.used ? 'dans ce show' : 'utilisé le ' + day(x.lastUsed)}</small></div>`).join('')}</div></details>`;
+}
+async function storageAction(act) {
+  if (act === 'storage-refresh') return loadStorage();
+  if (act === 'storage-dedupe') {
+    const r = await (await fetch('/api/storage/dedupe', { method: 'POST' })).json();
+    // le show en cours pointe sur le fichier gardé (les autres shows restent valables : l'ancien nom renvoie au fichier gardé)
+    const url = n => '/media/' + encodeURIComponent(n); let n = 0;
+    for (const [drop, keep] of Object.entries(r.map || {})) {
+      for (const c of Object.values(show.clips)) { if (c.src === url(drop)) { c.src = url(keep); n++; } for (const it of c.items || []) if (it.src === url(drop)) { it.src = url(keep); n++; } }
+      if (Array.isArray(show.files)) { show.files = show.files.map(f => (f === drop ? keep : f)).filter((f, i, a) => a.indexOf(f) === i); }
+    }
+    if (n || Object.keys(r.map || {}).length) commit();
+    await loadMedia(); renderLib(); renderGrid(); await loadStorage();
+    return toast(`${Object.keys(r.map || {}).length} doublon(s) supprimé(s), ${fmtMo(r.freed || 0)} libérés.`);
+  }
+  if (act === 'storage-clean') {
+    const dry = await (await fetch(`/api/storage/clean?days=${cleanDays}&dry=1`, { method: 'POST' })).json();
+    if (!dry.files?.length) return toast('Rien à nettoyer.');
+    if (!confirm(`Mettre à la corbeille ${dry.files.length} fichier(s) inutilisé(s) depuis plus de ${cleanDays} jours (${fmtMo(dry.freed)}) ?\n\n${dry.files.slice(0, 12).map(f => '• ' + f.name).join('\n')}${dry.files.length > 12 ? '\n…' : ''}\n\nIls restent récupérables dans la corbeille de l'ordinateur.`)) return;
+    const r = await (await fetch(`/api/storage/clean?days=${cleanDays}`, { method: 'POST' })).json();
+    await loadMedia(); renderLib(); await loadStorage();
+    return toast(`${r.files?.length || 0} fichier(s) mis à la corbeille, ${fmtMo(r.freed || 0)} libérés.`);
+  }
+}
 function bindSettings() {
   const v = $('#view-reglages');
+  v.addEventListener('click', e => { const act = e.target.closest('[data-act]')?.dataset.act; if (act?.startsWith('storage-')) storageAction(act); });
+  v.addEventListener('change', async e => {
+    if (e.target.id === 'clean-days') { cleanDays = +e.target.value; renderStorage(); }
+    if (e.target.id === 'auto-clean') {
+      const r = await (await fetch('/api/storage/auto?days=' + e.target.value, { method: 'POST' })).json().catch(() => ({}));
+      if (storageInfo) storageInfo.autoClean = r.autoClean || 0;
+      toast(r.autoClean ? `Au démarrage, la régie mettra à la corbeille les fichiers inutilisés depuis ${r.autoClean} jours.` : 'Nettoyage automatique désactivé.');
+    }
+  });
   v.addEventListener('change', e => {
     if (e.target.id === 'set-name') { show.name = e.target.value.trim() || 'Show'; commit(); updateTop(); }
     if (e.target.id === 'set-prep') setPrep(e.target.checked);
@@ -3016,6 +3257,7 @@ function bindSettings() {
     }
   });
   v.addEventListener('change', e => {
+    if (e.target.dataset.outscreen) return setOutputScreen(e.target.dataset.outscreen, e.target.value);
     const f = e.target.dataset.outF, o = f && M.outputById(show, e.target.dataset.out);
     if (f && o) {
       if (f === 'name') { o.name = e.target.value.trim().slice(0, 40) || o.name; e.target.value = o.name; renderGrid(); renderInspector(); updatePlaying(); }

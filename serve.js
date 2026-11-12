@@ -9,6 +9,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 
 const DEFAULT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
@@ -134,6 +135,112 @@ export function startServer(opts = {}) {
       for (const n of old) await fsp.rm(path.join(BACKUPS, n), { force: true });
     } catch { /* la sauvegarde ne doit jamais empêcher l'enregistrement */ }
   }
+
+  /* ---------- espace disque : empreinte et dernière utilisation de chaque fichier, doublons, nettoyage ----------
+   * data/fichiers.json : { media: {nom: {size, mtime, hash, lastUsed}}, docs: {id: lastUsed}, ppt: {nom: lastUsed},
+   *   alias: {doublon supprimé: fichier gardé}, autoClean: jours (0 = jamais) }.
+   * « Dernière utilisation » = le dernier enregistrement d'un show qui s'en sert : un show ouvert met à jour ses fichiers. */
+  const INDEX = path.join(DATA, 'fichiers.json');
+  let idx = { media: {}, docs: {}, ppt: {}, alias: {}, autoClean: 0 };
+  try { idx = { ...idx, ...JSON.parse(fs.readFileSync(INDEX, 'utf8')) }; } catch { /* premier lancement */ }
+  let idxT = null;
+  const saveIdx = () => { clearTimeout(idxT); idxT = setTimeout(() => fsp.writeFile(INDEX, JSON.stringify(idx)).catch(() => {}), 400); };
+  const hashFile = file => new Promise((ok, ko) => { const h = crypto.createHash('sha256'); fs.createReadStream(file).on('data', c => h.update(c)).on('end', () => ok(h.digest('hex'))).on('error', ko); });
+  async function mediaHash(name) {
+    const file = path.join(MEDIA, name), st = await fsp.stat(file), e = idx.media[name];
+    if (e?.hash && e.size === st.size && e.mtime === Math.round(st.mtimeMs)) return e.hash;
+    const hash = await hashFile(file);
+    idx.media[name] = { ...(e || {}), size: st.size, mtime: Math.round(st.mtimeMs), hash, lastUsed: e?.lastUsed || Date.now() };
+    saveIdx(); return hash;
+  }
+  /** Un fichier au contenu identique (même taille puis même empreinte) est-il déjà dans media/ ? */
+  async function findSame(size, hash) {
+    for (const name of await fsp.readdir(MEDIA)) {
+      if (name.startsWith('.') || !safeName(name)) continue;
+      const st = await fsp.stat(path.join(MEDIA, name)).catch(() => null);
+      if (st?.isFile() && st.size === size && await mediaHash(name) === hash) return name;
+    }
+    return null;
+  }
+  /** Fichiers dont un show se sert : clips (src, diaporamas, documents, PowerPoint) et sa médiathèque (show.files). */
+  function showRefs(sh) {
+    const media = new Set(), docs = new Set(), ppt = new Set();
+    const add = src => { const m = /^\/media\/(.+)$/.exec(String(src || '')); if (m) { try { const n = decodeURIComponent(m[1]); media.add(idx.alias[n] || n); } catch { /* adresse abîmée */ } } };
+    for (const c of Object.values(sh?.clips || {})) { add(c?.src); for (const it of c?.items || []) add(it?.src); if (c?.doc) docs.add(c.doc); if (c?.ppt) ppt.add(c.ppt); }
+    for (const f of Array.isArray(sh?.files) ? sh.files : []) { if (f.startsWith('doc:')) docs.add(f.slice(4)); else if (f.startsWith('ppt:')) ppt.add(f.slice(4)); else if (!f.startsWith('cam:')) media.add(idx.alias[f] || f); }
+    return { media, docs, ppt };
+  }
+  function touchRefs(sh) {
+    const r = showRefs(sh), now = Date.now();
+    for (const n of r.media) (idx.media[n] ||= {}).lastUsed = now;
+    for (const d of r.docs) idx.docs[d] = now;
+    for (const n of r.ppt) idx.ppt[n] = now;
+    saveIdx();
+  }
+  const dirSize = async dir => { let n = 0; for (const f of await fsp.readdir(dir).catch(() => [])) { const st = await fsp.stat(path.join(dir, f)).catch(() => null); if (st?.isFile()) n += st.size; } return n; };
+  /** Inventaire : chaque fichier avec sa taille, sa dernière utilisation et s'il sert au show en cours ; groupes de doublons. */
+  async function storage() {
+    let cur = null; try { cur = JSON.parse(await fsp.readFile(SHOW, 'utf8')); } catch { /* pas de show */ }
+    const r = showRefs(cur), now = Date.now(), media = [], docs = [], ppt = [], byHash = {};
+    for (const name of await fsp.readdir(MEDIA).catch(() => [])) {
+      if (name.startsWith('.') || !safeName(name)) continue;
+      const st = await fsp.stat(path.join(MEDIA, name)).catch(() => null); if (!st?.isFile()) continue;
+      const hash = await mediaHash(name), e = idx.media[name];
+      if (!e.lastUsed) e.lastUsed = now;
+      media.push({ name, size: st.size, lastUsed: e.lastUsed, used: r.media.has(name) });
+      (byHash[hash] ||= []).push(name);
+    }
+    for (const d of await fsp.readdir(DOCD).catch(() => [])) {
+      let meta = null; try { meta = JSON.parse(await fsp.readFile(path.join(DOCD, d, 'meta.json'), 'utf8')); } catch { continue; }
+      if (!idx.docs[d]) idx.docs[d] = now;
+      docs.push({ id: d, name: meta.name || d, size: await dirSize(path.join(DOCD, d)), lastUsed: idx.docs[d], used: r.docs.has(d) });
+    }
+    for (const name of await fsp.readdir(PRES).catch(() => [])) {
+      if (!presName(name) || name.startsWith('~$')) continue;
+      const st = await fsp.stat(path.join(PRES, name)).catch(() => null); if (!st?.isFile()) continue;
+      if (!idx.ppt[name]) idx.ppt[name] = now;
+      ppt.push({ name, size: st.size, lastUsed: idx.ppt[name], used: r.ppt.has(name) });
+    }
+    saveIdx();
+    const dups = Object.values(byHash).filter(g => g.length > 1).map(g => {
+      // on garde celui dont se sert le show, sinon le nom sans « (2) », sinon le plus court
+      const keep = [...g].sort((a, b) => (r.media.has(b) - r.media.has(a)) || (/\(\d+\)\.[^.]+$/.test(a) - /\(\d+\)\.[^.]+$/.test(b)) || a.length - b.length || a.localeCompare(b))[0];
+      return { keep, drop: g.filter(n => n !== keep), size: media.find(m => m.name === keep).size * (g.length - 1) };
+    });
+    return { media, docs, ppt, dups, autoClean: idx.autoClean || 0 };
+  }
+  /** Supprime les doublons : un seul fichier gardé par contenu ; les noms supprimés restent valables (alias) pour tous les shows. */
+  async function dedupe() {
+    const st = await storage(), map = {}; let freed = 0;
+    for (const g of st.dups) for (const n of g.drop) {
+      await fsp.rm(path.join(MEDIA, n), { force: true });
+      idx.alias[n] = g.keep; for (const [k, v] of Object.entries(idx.alias)) if (v === n) idx.alias[k] = g.keep;
+      delete idx.media[n]; map[n] = g.keep; freed += st.media.find(m => m.name === n)?.size || 0;
+    }
+    saveIdx();
+    return { map, freed };
+  }
+  /** Fichiers inutilisés depuis `days` jours (et pas utilisés par le show en cours) → corbeille de l'ordinateur (récupérables). */
+  async function cleanUnused(days, dry) {
+    const st = await storage(), limit = Date.now() - days * 86400000, out = [];
+    const old = x => !x.used && x.lastUsed < limit;
+    for (const m of st.media.filter(old)) out.push({ kind: 'media', name: m.name, size: m.size, file: path.join(MEDIA, m.name) });
+    for (const d of st.docs.filter(old)) out.push({ kind: 'doc', name: d.name, id: d.id, size: d.size, file: path.join(DOCD, d.id) });
+    for (const x of st.ppt.filter(old)) out.push({ kind: 'ppt', name: x.name, size: x.size, file: path.join(PRES, x.name) });
+    if (dry) return { files: out.map(({ file, ...f }) => f), freed: out.reduce((a, f) => a + f.size, 0) };
+    const done = [];
+    for (const f of out) {
+      try {
+        if (opts.trash) await opts.trash(f.file);
+        else { const bin = path.join(DATA, 'corbeille'); await fsp.mkdir(bin, { recursive: true }); await fsp.rename(f.file, path.join(bin, Date.now() + '-' + path.basename(f.file))); }
+        if (f.kind === 'media') delete idx.media[f.name]; else if (f.kind === 'doc') delete idx.docs[f.id]; else delete idx.ppt[f.name];
+        done.push(f);
+      } catch { /* fichier ouvert ailleurs : on le laisse */ }
+    }
+    saveIdx();
+    return { files: done.map(({ file, ...f }) => f), freed: done.reduce((a, f) => a + f.size, 0) };
+  }
+  if (idx.autoClean > 0) setTimeout(() => cleanUnused(idx.autoClean).then(r => { if (r.files.length) diag.nettoyage = { at: new Date().toISOString(), ...r }; }).catch(() => {}), 15000);
 
   async function listMedia() {
     const out = [];
@@ -308,7 +415,8 @@ export function startServer(opts = {}) {
         }
         if (req.method === 'PUT' || req.method === 'POST') {
           const body = await readBody(req);
-          JSON.parse(body.toString('utf8'));                       // refuse un JSON invalide
+          const parsed = JSON.parse(body.toString('utf8'));        // refuse un JSON invalide
+          try { touchRefs(parsed); } catch { /* l'index ne doit jamais empêcher l'enregistrement */ }
           if (fs.existsSync(SHOW)) await fsp.copyFile(SHOW, SHOW + '.bak').catch(() => {});
           await backupShow();
           const tmp = SHOW + '.tmp';
@@ -325,14 +433,24 @@ export function startServer(opts = {}) {
           if (!name) return send(res, 400, { error: 'Type de fichier non pris en charge (vidéo mp4/mov/webm ou image).' });
           const final = await uniqueName(name);
           const tmp = path.join(MEDIA, '.envoi-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+          const h = crypto.createHash('sha256'); let size = 0;
           try {
             await fsp.mkdir(MEDIA, { recursive: true });              // dossier supprimé ou déplacé entre-temps : on le recrée
             await new Promise((resolve, reject) => {
               const ws = fs.createWriteStream(tmp);
+              req.on('data', c => { h.update(c); size += c.length; });
               req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject);
               req.on('aborted', () => reject(new Error('envoi interrompu')));
             });
+            const hash = h.digest('hex'), same = await findSame(size, hash);
+            if (same) {                                                // déjà dans le dossier : pas de doublon, on réutilise ce fichier
+              await fsp.rm(tmp, { force: true });
+              (idx.media[same] ||= {}).lastUsed = Date.now(); saveIdx();
+              return send(res, 200, { ok: true, name: same, url: '/media/' + encodeURIComponent(same), dup: true });
+            }
             await fsp.rename(tmp, path.join(MEDIA, final));
+            const st = await fsp.stat(path.join(MEDIA, final));
+            idx.media[final] = { size, mtime: Math.round(st.mtimeMs), hash, lastUsed: Date.now() }; delete idx.alias[final]; saveIdx();
           } catch (e) { req.resume(); await fsp.rm(tmp, { force: true }).catch(() => {}); return send(res, 500, { error: fsMessage(e, MEDIA) }); }
           return send(res, 200, { ok: true, name: final, url: '/media/' + encodeURIComponent(final) });
         }
@@ -431,6 +549,17 @@ export function startServer(opts = {}) {
           return send(res, 200, { ok: true });
         }
       }
+      if (p === '/api/storage' && req.method === 'GET') return send(res, 200, await storage());
+      if (p === '/api/storage/dedupe' && req.method === 'POST') return send(res, 200, { ok: true, ...(await dedupe()) });
+      if (p === '/api/storage/clean' && req.method === 'POST') {
+        const days = Math.max(1, Math.min(3650, Math.round(+url.searchParams.get('days') || 0)));
+        if (!+url.searchParams.get('days')) return send(res, 400, { error: 'Nombre de jours manquant' });
+        return send(res, 200, { ok: true, ...(await cleanUnused(days, url.searchParams.get('dry') === '1')) });
+      }
+      if (p === '/api/storage/auto' && req.method === 'POST') {
+        idx.autoClean = Math.max(0, Math.min(3650, Math.round(+url.searchParams.get('days') || 0))); saveIdx();
+        return send(res, 200, { ok: true, autoClean: idx.autoClean });
+      }
       if (p === '/api/ppt/list' && req.method === 'GET') {           // PowerPoint « en direct » gardés par la régie (pour la médiathèque)
         const out = [];
         for (const name of await fsp.readdir(PRES).catch(() => [])) {
@@ -489,7 +618,8 @@ export function startServer(opts = {}) {
       if (p.startsWith('/media/')) {
         const name = safeName(p.slice(7));
         if (!name) return send(res, 404, 'Introuvable', 'text/plain; charset=utf-8');
-        return serveFile(req, res, path.join(MEDIA, name), true);
+        const real = !fs.existsSync(path.join(MEDIA, name)) && idx.alias[name] ? idx.alias[name] : name;     // doublon supprimé : le fichier gardé
+        return serveFile(req, res, path.join(MEDIA, real), true);
       }
 
       const rel = p === '/' ? 'index.html' : p.slice(1);

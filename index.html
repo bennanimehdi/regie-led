@@ -32,6 +32,7 @@
     <span>Général</span>
     <input id="master" type="range" min="0" max="1" step="0.01">
   </label>
+  <button id="audio-mute" class="btn big" title="Couper tout le son de sortie (vidéos, sources en direct), sans toucher à l'image">🔊 Son</button>
   <button id="blackout" class="btn big" title="Écran noir (touche B)">Noir</button>
   <button id="open-out" class="btn big gold">Ouvrir la sortie</button>
   <span class="out-status" id="out-status">Sortie fermée</span>
@@ -41,6 +42,7 @@
   <section class="view regie" id="view-regie">
     <div class="resizer" id="lib-resizer" title="Tire pour élargir ou rétrécir la médiathèque (double-clic : largeur d'origine)"></div>
     <div class="resizer" id="right-resizer" title="Tire pour élargir ou rétrécir le panneau de droite (double-clic : largeur d'origine)"></div>
+    <button class="panel-strip strip-l" id="lib-strip" hidden title="Afficher la médiathèque">Médiathèque ›</button>
     <aside class="panel lib" id="lib"></aside>
     <div class="center">
       <div class="monitor" id="monitor">
@@ -53,6 +55,7 @@
       <div class="shapebar scenebar" id="scenebar"></div>
       <div class="grid-wrap" id="grid"></div>
     </div>
+    <button class="panel-strip strip-r" id="right-strip" hidden title="Afficher le conducteur et les réglages">‹ Conducteur</button>
     <aside class="right">
       <div class="panel cues" id="cues"></div>
       <div class="panel inspector" id="inspector"></div>

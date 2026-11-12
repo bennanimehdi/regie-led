@@ -6,4 +6,11 @@ contextBridge.exposeInMainWorld('regieDesktop', {
   /** Appelé avec { text } quand une mise à jour est disponible ou prête. */
   onUpdate: cb => ipcRenderer.on('regie:update', (_e, m) => cb(m)),
   restartToUpdate: () => ipcRenderer.send('regie:restart-update'),
+  /** La prochaine capture prend directement cette fenêtre si elle existe : { ppt: 'nom du fichier' } ou { label: 'titre exact' }. */
+  preferCapture: want => ipcRenderer.invoke('regie:prefer-capture', want),
+  /** Écrans branchés et écran choisi pour chaque sortie : { list: [{id, label, regie}], choice: {sortie: id | 'window'} }. */
+  displays: () => ipcRenderer.sendSync('regie:displays'),
+  /** Choisit l'écran d'une sortie ('auto', id d'écran ou 'window') ; une sortie ouverte y est déplacée tout de suite. */
+  setOutputDisplay: (outId, v) => ipcRenderer.send('regie:set-output-display', outId, v),
+  onDisplaysChanged: cb => ipcRenderer.on('regie:displays-changed', () => cb()),
 });
