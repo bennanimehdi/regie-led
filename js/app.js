@@ -2138,6 +2138,7 @@ async function loadScreens(ask) {
 }
 /** Recharge la fenêtre de sortie déjà ouverte (retrouvée par son nom). Renvoie false si elle est hors d'atteinte. */
 function refreshOutput() {
+  if (window.regieDesktop) return false;          // application de bureau : la sortie n'est pas une fenêtre de la régie ; openOutput() la recharge sur place
   let w = null;
   try { w = window.open('', 'regie-led-sortie'); } catch { /* bloqué */ }
   if (!w || w === window) return false;
@@ -2156,9 +2157,9 @@ async function openOutput(id = 'main') {
   const s = main ? extScreen() : screenFor(o);
   const feat = s ? `popup,left=${s.availLeft},top=${s.availTop},width=${s.availWidth},height=${s.availHeight}` : 'popup,left=80,top=80,width=1280,height=720';
   const w = window.open(main ? 'output.html' : 'output.html?out=' + encodeURIComponent(o.id), main ? 'regie-led-sortie' : 'regie-led-sortie-' + o.id, feat);
-  if (!w) return toast('Le navigateur a bloqué la fenêtre de sortie : autorise les pop-ups pour cette page.', 'err');
-  if (main) outWin = w;
   if (window.regieDesktop) return toast(`« ${o.name} » ouverte : en plein écran sur l'écran externe s'il y en a un, sinon en fenêtre. Menu Sortie → « Écran de la sortie » pour choisir ; Échap dans la sortie quitte le plein écran.`);
+  if (!w) return toast('Le navigateur a bloqué la fenêtre de sortie : autorise les pop-ups pour cette page.', 'err');   // (l'application de bureau crée elle-même la fenêtre : w est vide, c'est normal)
+  if (main) outWin = w;
   if (!screens) await loadScreens(true);
   const placed = main ? extScreen() : screenFor(o);
   // Chrome ouvre souvent la fenêtre sur l'écran de la régie malgré la position demandée : on vérifie où elle est et on la déplace

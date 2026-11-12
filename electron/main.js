@@ -24,6 +24,9 @@ const icon = nativeImage.createFromPath(path.join(appRoot, 'build', 'icon.png'))
 
 app.setName('Régie LED');
 app.setAppUserModelId('ma.bennanievents.regieled');
+// La fenêtre de sortie doit avoir son PROPRE processus (voir openOutputWindow) : sans cette option, Chromium regroupe les fenêtres
+// d'un même site dans un seul processus, et tout ce que fait la régie (aperçus, fenêtre de confirmation) ralentit ou fige le mur.
+if (process.env.REGIE_LED_PROFILE) app.setPath('userData', process.env.REGIE_LED_PROFILE);   // essais : un 2e exemplaire à côté de l'application installée
 if (!app.requestSingleInstanceLock()) app.quit();
 
 // Journal : ~/Library/Logs/Régie LED/regie-led.log (Mac) ou %APPDATA%\Régie LED\logs\regie-led.log (Windows).
@@ -82,20 +85,27 @@ function outputOptions(disp) {
   return { ...common, x: b.x, y: b.y, width: b.width, height: b.height, ...(process.platform === 'darwin' ? { simpleFullscreen: true } : { fullscreen: true }) };
 }
 /** window.open() depuis la régie : la sortie devient une vraie fenêtre plein écran ; les liens externes vont dans le navigateur. */
-function handleWindowOpen({ url, features }) {
+function handleWindowOpen({ url }) {
   let u; try { u = new URL(url); } catch { return { action: 'deny' }; }
   if (/^https?:$/.test(u.protocol) && u.origin !== new URL(srv.url).origin) { shell.openExternal(url); return { action: 'deny' }; }
   // window.open('', nom) : la régie sonde l'existence d'une sortie puis referme aussitôt la fenêtre vide.
   if (!/output\.html$/.test(u.pathname)) return { action: 'allow', overrideBrowserWindowOptions: { show: false, width: 320, height: 200 } };
-  const outId = u.searchParams.get('out') || 'main';
-  return { action: 'allow', overrideBrowserWindowOptions: outputOptions(displayFor(outId, features)) };
+  if (u.origin === new URL(srv.url).origin) setImmediate(() => openOutputWindow(url));    // seulement la sortie de notre serveur local
+  return { action: 'deny' };
 }
-function onWindowCreated(win, { url }) {
-  let u; try { u = new URL(url); } catch { return; }
-  if (!/output\.html$/.test(u.pathname)) return;
-  const outId = u.searchParams.get('out') || 'main';
+/** Fenêtre de sortie créée ici, et non par window.open : elle a ainsi son PROPRE processus. Ouverte par window.open, elle
+ *  partageait le fil d'exécution de la régie : les aperçus de la régie la ralentissaient (24 i/s au lieu de 60 sur un PC Windows)
+ *  et une fenêtre de confirmation de la régie la figeait complètement. Les captures (PowerPoint, fenêtre) lui arrivent par le relais. */
+function openOutputWindow(url) {
+  const outId = new URL(url).searchParams.get('out') || 'main';
+  const old = outputs.get(outId);
+  if (old && !old.isDestroyed()) { old.loadURL(url); old.show(); return; }   // déjà ouverte : rechargée sur place, au même endroit
+  const win = new BrowserWindow(outputOptions(displayFor(outId)));
+  setupOutputWindow(win, outId);
+  win.loadURL(url);
+}
+function setupOutputWindow(win, outId) {
   logConsole(win.webContents, 'sortie ' + outId);
-  const old = outputs.get(outId); if (old && old !== win && !old.isDestroyed()) old.destroy();
   outputs.set(outId, win);
   win.setMenuBarVisibility(false);
   // Échap dans la sortie : on quitte le plein écran (la fenêtre reste, déplaçable) ; Cmd/Ctrl+Maj+W la ferme (menu Sortie).
@@ -191,7 +201,6 @@ function createRegieWindow() {
   regieWin.once('ready-to-show', () => regieWin.show());
   logConsole(regieWin.webContents, 'régie');
   regieWin.webContents.setWindowOpenHandler(handleWindowOpen);
-  regieWin.webContents.on('did-create-window', onWindowCreated);
   regieWin.on('close', e => {
     const open = [...outputs.values()].filter(w => !w.isDestroyed());
     if (!open.length) return;

@@ -327,9 +327,19 @@ bureau ajoute processeur, mémoire totale et chaleur (Mac). Un clic ouvre le dé
 
 ## Vidéos lourdes (4K) : aperçus allégés, relance automatique
 
+- **La fenêtre de sortie a son propre processus** (application de bureau) : elle est créée par `electron/main.js`
+  (`openOutputWindow`), et non plus par `window.open`, qui la mettait dans le même processus que la régie. Avant, tout ce que
+  faisait la régie (aperçus, fenêtre de confirmation) ralentissait la sortie (24 i/s au lieu de 60 sur un PC Windows) ou la figeait.
+  Mesuré : régie bloquée 3 s → sortie figée 3 s avant, plus long trou de 9 ms après. Les fenêtres capturées (PowerPoint en direct)
+  arrivent maintenant à la sortie par le relais (`js/relay.js`). Essai d'un 2e exemplaire à côté de l'application installée :
+  `REGIE_LED_PROFILE=<dossier> REGIE_LED_DIR=<données> npx electron .`
 - Dans les **aperçus de la régie** (Préparation, Sortie, Outputs), une vidéo bien plus grande que l'aperçu (4K…) est réduite avant
   d'être envoyée à la carte graphique. La **fenêtre de sortie garde toujours la pleine résolution**. Sans cela, une 4K était
   envoyée en entier jusqu'à trois fois à chaque image, ce qui peut saturer un PC portable (vidéo figée à la sortie).
+- Une image de vidéo (ou de caméra, de fenêtre capturée) n'est envoyée à la carte graphique que lorsque le décodeur en produit
+  une **nouvelle** (`requestVideoFrameCallback`) : une vidéo à 30 i/s est envoyée 30 fois par seconde, et non plus à chaque
+  rafraîchissement de l'écran (120 ou 144 fois par seconde sur un écran rapide, soit 4 à 5 fois trop pour une 4K : saccades sous
+  Windows). Filet de sécurité : un envoi au moins toutes les 0,5 s.
 - Dans la **fenêtre de sortie**, une vidéo qui devrait jouer mais reste en pause est relancée (au plus toutes les 1,5 s), et une
   image figée depuis 2,5 s est décoincée (petit saut de 0,04 s + relance). Chaque relance est notée dans le journal.
 - Le **journal** (Aide → Ouvrir le dossier des journaux → `main.log`) note aussi la carte graphique au démarrage (décodage vidéo

@@ -26,7 +26,23 @@ class Base {
     try { this.smallCtx.drawImage(v, 0, 0, w, h); } catch { return; }
     this.upload(cv);
   }
-  dispose() { this.gl.deleteTexture(this.tex); }
+  /** Suit les images que le décodeur produit vraiment (requestVideoFrameCallback). Sans ça, une vidéo à 30 i/s était renvoyée
+   *  à la carte graphique à chaque rafraîchissement de l'écran : 144 fois par seconde sur un écran 144 Hz, soit près de 5 fois trop
+   *  pour une 4K (saccades sous Windows, où cet envoi coûte cher). */
+  watchFrames(v) {
+    if (typeof v.requestVideoFrameCallback !== 'function') return;
+    this.rvfc = true;
+    const cb = () => { this.fresh = true; if (!this.gone) v.requestVideoFrameCallback(cb); };
+    v.requestVideoFrameCallback(cb);
+  }
+  /** Faut-il renvoyer l'image ? Oui s'il y a une nouvelle image décodée ; par sécurité aussi toutes les 0,5 s (rappel manqué,
+   *  navigateur sans requestVideoFrameCallback : on revient à l'ancien comportement, une image par rafraîchissement). */
+  freshFrame() {
+    const now = performance.now();
+    if (!this.rvfc || this.fresh || !this.ready || now - (this.upAt || 0) > 500) { this.fresh = false; this.upAt = now; return true; }
+    return false;
+  }
+  dispose() { this.gone = true; this.gl.deleteTexture(this.tex); }
 }
 
 /** Son d'un élément <video> : seulement dans la fenêtre de sortie (l'aperçu de la régie reste muet), au volume du clip,
@@ -52,6 +68,7 @@ class VideoSource extends Base {
     v.addEventListener('loadedmetadata', () => { if (this.lateSeek) this.seekLate(); });
     v.addEventListener('error', () => { this.error = true; });
     this.kicks = 0; this.stuckAt = 0;
+    this.watchFrames(v);
     this.setClip(clip);
   }
   loops() { const c = this.clip; return c.end !== 'hold' && c.end !== 'next'; }
@@ -107,7 +124,7 @@ class VideoSource extends Base {
     if (this.pausedAt) { if (!v.paused) { v.pause(); this.pausedByUs = true; } }
     else if (this.pausedByUs) { this.pausedByUs = false; this.play(); }
     if (v.readyState >= 2 && v.videoWidth) {
-      if (!this.ready || v.currentTime !== this.lastT) { this.uploadVideo(v); this.lastT = v.currentTime; }
+      if (this.rvfc ? this.freshFrame() : (!this.ready || v.currentTime !== this.lastT)) { this.uploadVideo(v); this.lastT = v.currentTime; }
       this.w = v.videoWidth; this.h = v.videoHeight; this.ready = true;
       if (this.frozen()) return;
       const { a, b, cut } = this.seg();
@@ -179,7 +196,7 @@ class CameraSource extends Base {
   constructor(eng, clip) {
     super(eng, clip);
     const v = this.v = document.createElement('video');
-    v.playsInline = true; v.muted = true;
+    v.playsInline = true; v.muted = true; this.watchFrames(v);
     const video = { width: { ideal: 1920 }, height: { ideal: 1080 } };
     if (clip.deviceId) video.deviceId = { exact: clip.deviceId };
     // Le son de la source (entrée audio de la carte de capture) n'est demandé que par la fenêtre de sortie, telle quelle (sans traitement « voix »).
@@ -200,7 +217,7 @@ class CameraSource extends Base {
   }
   update() {
     const v = this.v;
-    if (v.readyState >= 2 && v.videoWidth) { this.upload(v); this.w = v.videoWidth; this.h = v.videoHeight; this.ready = true; }
+    if (v.readyState >= 2 && v.videoWidth) { if (this.freshFrame()) this.upload(v); this.w = v.videoWidth; this.h = v.videoHeight; this.ready = true; }
   }
   dispose() { this.dead = true; this.stream?.getTracks().forEach(t => t.stop()); this.v.srcObject = null; super.dispose(); }
 }
@@ -334,7 +351,7 @@ class ScreenSource extends Base {
   constructor(eng, clip) {
     super(eng, clip);
     const v = this.v = document.createElement('video');
-    v.playsInline = true; v.muted = true;
+    v.playsInline = true; v.muted = true; this.watchFrames(v);
     this.stream = null; this.checked = 0;
   }
   update(now) {
@@ -349,7 +366,7 @@ class ScreenSource extends Base {
       if (live) applyAudio(this, this.v, this.clip);        // son de la fenêtre capturée (si Chrome l'a fourni), au volume du clip
     }
     const v = this.v;
-    if (this.stream && v.readyState >= 2 && v.videoWidth) { this.ph = false; this.upload(v); this.w = v.videoWidth; this.h = v.videoHeight; this.ready = true; }
+    if (this.stream && v.readyState >= 2 && v.videoWidth) { if (this.ph || this.freshFrame()) this.upload(v); this.ph = false; this.w = v.videoWidth; this.h = v.videoHeight; this.ready = true; }
   }
   /** Carton d'attente, dans la régie seulement (jamais sur le mur) : rappelle qu'il reste à choisir la fenêtre. */
   placeholder() {
