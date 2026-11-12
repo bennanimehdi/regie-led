@@ -68,6 +68,16 @@ export const SHAPE_INDEX = { rect: 0, carre: 0, losange: 1, cercle: 2, triangle:
 export const validPoly = poly => Array.isArray(poly) && poly.length >= 3 && poly.every(p => Array.isArray(p) && isFinite(+p[0]) && isFinite(+p[1]));
 /** Choix de forme proposés pour une zone : les formes prédéfinies, plus « Forme libre » si la zone en a une. */
 export function shapeOptions(z) { return z?.shape === 'libre' && validPoly(z.poly) ? [...SHAPES, ['libre', 'Forme libre (dessinée)']] : SHAPES; }
+/** Coins libres dans la composition : z.quad = 4 points (px de la composition : HG, HD, BD, BG). z.src reste la boîte englobante. */
+export const validQuad = q => Array.isArray(q) && q.length === 4 && q.every(p => Array.isArray(p) && isFinite(+p[0]) && isFinite(+p[1]));
+export const zoneQuad = z => (validQuad(z?.quad) ? z.quad : null);
+/** Point (u, v) du carré unité de la zone → composition (px) : à travers les coins libres, sinon le rectangle tourné. */
+export function zonePoint(z, u, v) {
+  const q = zoneQuad(z);
+  if (q) { const r = applyH(squareToQuad(q), u, v); return [r[0], r[1]]; }
+  const s = z.src, a = (+s.rot || 0) * Math.PI / 180, dx = (u - 0.5) * s.w, dy = (v - 0.5) * s.h;
+  return [s.x + s.w / 2 + Math.cos(a) * dx - Math.sin(a) * dy, s.y + s.h / 2 + Math.sin(a) * dx + Math.cos(a) * dy];
+}
 /** Tous les contours d'une zone dans le carré unité : la forme prédéfinie, ou le polygone dessiné + les formes collées (`extra`). */
 export function shapeGroups(z) { return z?.shape === 'libre' && validPoly(z.poly) ? [shapePoints('libre', z.poly), ...(z.extra || []).filter(validPoly).map(g => shapePoints('libre', g))] : [shapePoints(z?.shape)]; }
 /** Contour de la forme dans le carré unité (u vers la droite, v vers le bas). `poly` = points d'une forme libre. */
@@ -173,7 +183,7 @@ export function normalizeShow(s) {
   if (!outs.length || outs[0].id !== 'main') outs.unshift({ id: 'main', name: 'LED principale', ...(outs.find(o => o.id === 'main') || {}) });
   show.outputs = outs.filter((o, i, a) => i === 0 || (o.id !== 'main' && a.findIndex(x => x.id === o.id) === i)).map(normOut);
   show.slices = (Array.isArray(show.slices) ? show.slices : []).filter(z => z && z.src && Array.isArray(z.dst) && z.dst.length === 4)
-    .map(z => ({ id: z.id || uid(), name: z.name || 'Zone', on: z.on !== false, custom: z.custom === true, shape: z.shape in SHAPE_INDEX && (z.shape !== 'libre' || validPoly(z.poly)) ? z.shape : 'rect', ...(z.shape === 'libre' && validPoly(z.poly) ? { poly: z.poly.map(p => [clamp(+p[0], 0, 1), clamp(+p[1], 0, 1)]), ...(Array.isArray(z.extra) && z.extra.some(validPoly) ? { extra: z.extra.filter(validPoly).map(g => g.map(p => [clamp(+p[0], 0, 1), clamp(+p[1], 0, 1)])) } : {}) } : {}), src: { x: +z.src.x || 0, y: +z.src.y || 0, w: Math.max(1, +z.src.w || 1), h: Math.max(1, +z.src.h || 1), rot: +z.src.rot || 0 }, dst: z.dst.map(p => [+p[0] || 0, +p[1] || 0]), ...(+z.pitch > 0 ? { pitch: +z.pitch, pw: +z.pw || 0, ph: +z.ph || 0 } : {}) }));   // pitch/pw/ph : écran LED (mm, m, m) saisi dans Mapping
+    .map(z => ({ id: z.id || uid(), name: z.name || 'Zone', on: z.on !== false, custom: z.custom === true, ...(validQuad(z.quad) ? { quad: z.quad.map(p => [Math.round(+p[0]), Math.round(+p[1])]) } : {}), shape: z.shape in SHAPE_INDEX && (z.shape !== 'libre' || validPoly(z.poly)) ? z.shape : 'rect', ...(z.shape === 'libre' && validPoly(z.poly) ? { poly: z.poly.map(p => [clamp(+p[0], 0, 1), clamp(+p[1], 0, 1)]), ...(Array.isArray(z.extra) && z.extra.some(validPoly) ? { extra: z.extra.filter(validPoly).map(g => g.map(p => [clamp(+p[0], 0, 1), clamp(+p[1], 0, 1)])) } : {}) } : {}), src: { x: +z.src.x || 0, y: +z.src.y || 0, w: Math.max(1, +z.src.w || 1), h: Math.max(1, +z.src.h || 1), rot: +z.src.rot || 0 }, dst: z.dst.map(p => [+p[0] || 0, +p[1] || 0]), ...(+z.pitch > 0 ? { pitch: +z.pitch, pw: +z.pw || 0, ph: +z.ph || 0 } : {}) }));   // pitch/pw/ph : écran LED (mm, m, m) saisi dans Mapping
   if (!show.slices.length) show.slices.push(newSlice(show, 'Écran principal'));
   return show;
 }

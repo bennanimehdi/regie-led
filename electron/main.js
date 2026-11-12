@@ -32,7 +32,20 @@ log.transports.file.level = 'info';
 log.transports.console.level = packaged ? false : 'info';
 log.errorHandler.startCatching({ showDialog: false });
 
-const userRoot = process.env.REGIE_LED_DIR || path.join(app.getPath('documents'), 'Régie LED');
+/** Le dossier de données doit accepter l'écriture : sous Windows, « Documents » est souvent bloqué par la protection contre les
+ *  ransomwares (accès contrôlé aux dossiers) ou redirigé vers OneDrive. On essaie Documents, puis le dossier personnel. */
+function writableDir(dir) {
+  try {
+    for (const d of [dir, path.join(dir, 'data'), path.join(dir, 'media')]) fs.mkdirSync(d, { recursive: true });
+    const probe = path.join(dir, 'media', '.test-ecriture-' + process.pid);
+    fs.writeFileSync(probe, 'ok'); fs.rmSync(probe, { force: true });
+    return true;
+  } catch (e) { log.warn(`Dossier non accessible en écriture : ${dir} (${e.code || e.message})`); return false; }
+}
+const preferredRoot = process.env.REGIE_LED_DIR || path.join(app.getPath('documents'), 'Régie LED');
+const fallbackRoot = path.join(app.getPath('home'), 'Régie LED');
+let userRoot = preferredRoot, rootMoved = false;
+if (!process.env.REGIE_LED_DIR && !writableDir(preferredRoot) && writableDir(fallbackRoot)) { userRoot = fallbackRoot; rootMoved = true; }
 const dataDir = path.join(userRoot, 'data'), mediaDir = path.join(userRoot, 'media');
 const settingsFile = path.join(app.getPath('userData'), 'reglages-bureau.json');
 let settings = {};
@@ -181,6 +194,11 @@ app.whenReady().then(async () => {
   try { srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 4410 }); }
   catch (e) { log.warn(`Port 4410 indisponible (${e.code || e.message}) : port libre au hasard, les réglages du navigateur ne seront pas conservés.`); srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0 }); }
   log.info(`Régie LED ${app.getVersion()} — serveur ${srv.url} — shows : ${dataDir} — médias : ${mediaDir}`);
+  if (rootMoved && settings.rootWarned !== userRoot) {             // prévenu une fois : les fichiers ne sont pas dans Documents
+    settings.rootWarned = userRoot; saveSettings();
+    setTimeout(() => dialog.showMessageBox({ type: 'info', title: 'Régie LED', message: 'Shows et médias rangés dans « ' + userRoot + ' »',
+      detail: `Le dossier « ${preferredRoot} » refuse l'écriture (sous Windows : protection contre les ransomwares ou OneDrive). La régie range donc ses shows et ses médias dans « ${userRoot} ».` }).catch(() => {}), 1500);
+  }
   setupPermissions();
   createRegieWindow();
   updater = setupUpdater({ log, packaged, releasesUrl: RELEASES_URL, parent: () => regieWin, onChange: st => {

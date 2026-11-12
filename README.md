@@ -97,7 +97,11 @@ La fenêtre de sortie fait son propre rendu : si la régie est rechargée, l'éc
   importé pour un autre show (ou le supprime définitivement du disque). Les **sources en direct** (carte HDMI, caméra) suivent la
   même règle : rien dans un show neuf tant qu'on ne les reprend pas (« Fichiers déjà importés… » ou « Capturer une source → En direct »). Les shows créés avant cette version voient tout le dossier
   `media`, comme avant, et « Supprimer » y efface le fichier.
-  **Hauteur des écrans** Préparation / Sortie : poignée sous les écrans (double-clic = taille d'origine), mémorisée.
+  **Taille des écrans** Préparation / Sortie : chaque écran a une poignée dorée dans son coin bas-droit (agrandir, réduire ; la
+  largeur suit, en 16:9) ; la poignée sous les écrans agrandit ou réduit les deux ensemble. Double-clic = taille d'origine. Mémorisé.
+  Fenêtre étroite : les panneaux et la barre du haut se resserrent (libellés au-dessus des champs) au lieu d'être coupés.
+  **Raccourcis** : « ⌨ Voir le clavier » montre tout le clavier, touches utilisées en vert (vif = tes raccourcis, foncé = ceux de
+  la régie), libres en gris ; le survol dit ce que fait la touche.
   **Formes** : case « Aimant » (bords et centres se collent à l'image et aux autres formes ; rotation par 15°), poignée ronde au-dessus de
   la forme sélectionnée pour la tourner à la souris.
   **Mapping** : « Taille exacte depuis le pitch LED » (pitch mm + largeur/hauteur en m → pixels de la zone, mémorisés avec la zone) ;
@@ -209,6 +213,20 @@ le met en **pause** là où la vidéo doit démarrer : c'est le point de départ
 par défaut) et ne démarre, depuis ce point, qu'au moment où elle passe à la sortie ; la préparation joue alors en même temps que le mur.
 Quand le clip est en cours, **« ▶ Sauter à la position de l'aperçu »** fait sauter la lecture à cet instant, régie et mur ensemble.
 
+## Onglet Outputs : toutes les sorties en direct
+
+L'onglet **Outputs** (à côté de Réglages) montre une vignette vivante par sortie : la **MASTER** (spectateurs, avec le mapping)
+et chaque autre sortie (retours, autres salles), telle qu'elle est envoyée sur son écran, calques masqués compris. Sur chaque
+carte : le nom, l'état de la fenêtre (fermée, résolution, i/s), « Ouvrir / Rouvrir », ce qu'elle montre (toute la composition ou
+une zone en plein cadre) et les calques visibles (pastilles vertes = visibles, clic pour masquer). « ＋ Sortie » en ajoute une.
+
+## Coins libres dans la composition
+
+Barre Formes (ou panneau d'une zone dans Mapping) → **« ⬚ Coins libres »** : chaque coin de la forme se déplace seul (ronds dorés),
+pour un écran en biais, en trapèze ou vu en perspective. Le contenu de la zone est déformé pour remplir le quadrilatère (homographie,
+dans le moteur `u_zq` côté composition et `u_sq` côté sortie), la sortie suit, et une sortie « zone en plein cadre » remet l'image
+droite. L'aimant cale chaque coin. Les 4 coins se règlent aussi au pixel dans le panneau de la zone. Re-cliquer redonne un rectangle.
+
 ## Plusieurs sorties (LED, retour conférenciers, autre salle)
 
 Réglages → **Sorties (écrans)** : la sortie principale (« LED principale », avec le mapping et le son) et autant d'autres sorties
@@ -265,11 +283,20 @@ d'un intervenant branché sur la carte de capture HDMI — on voit son écran da
 
 ## Import de documents (PowerPoint, Word, Excel, PDF)
 
-Déposer le fichier dans la médiathèque (ou « Importer »). Un PDF est découpé directement ; un fichier Office est d'abord
-converti en PDF par **l'application Office installée sur le Mac**, que la régie pilote (elle s'ouvre un instant).
-La première fois, macOS demande d'autoriser ce pilotage (« … souhaite contrôler Microsoft PowerPoint ») : répondre OK.
+Déposer le fichier dans la médiathèque (ou « Importer »). Le document arrive **dans la médiathèque seulement** (rien n'est posé
+dans la grille) : on le glisse ensuite sur une case ou une forme.
+Un **PDF** est lu par la régie elle-même avec pdf.js (`js/pdf.min.js` + `js/pdf.worker.min.js`, copiés de `pdfjs-dist`) : même
+résultat sur Mac et Windows, une image JPEG par page, envoyée au serveur (`/api/doc-page` puis `/api/doc-done`).
+Un fichier **Office** est converti par l'application installée, que la régie pilote (elle s'ouvre un instant) :
+- Mac : `tools/office2pdf.applescript` (PDF) puis `tools/pdf2img.js`. La première fois, macOS demande d'autoriser ce pilotage : répondre OK.
+- Windows : PowerPoint exporte ses diapositives en images (`tools/pptexport.ps1`) ; Word et Excel exportent un PDF
+  (`tools/office2pdf.ps1`), renvoyé à la régie qui le lit avec pdf.js.
 Ce sont des images fixes : ni animations, ni vidéos intégrées. Pour garder les animations d'un PowerPoint, l'exporter en MP4.
-Outils : `tools/office2pdf.applescript` (ne referme que le document qu'il a ouvert) et `tools/pdf2img.js`.
+
+**Windows : « ENOENT » ou « EPERM » à l'import.** Le dossier Documents est souvent protégé (Sécurité Windows → Protection contre
+les ransomwares → accès contrôlé aux dossiers) ou redirigé vers OneDrive. Au démarrage, l'application vérifie qu'elle peut écrire
+dans « Documents/Régie LED » ; sinon elle range shows et médias dans le dossier personnel (« C:\Users\<nom>\Régie LED ») et le dit
+une fois. Pour garder Documents : autoriser Régie LED dans la protection contre les ransomwares.
 
 ## PowerPoint en direct (animations et vidéos conservées)
 

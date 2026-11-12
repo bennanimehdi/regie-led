@@ -15,6 +15,7 @@
     <button data-tab="regie" class="on">Régie</button>
     <button data-tab="mapping">Mapping</button>
     <button data-tab="reglages">Réglages</button>
+    <button data-tab="outputs" title="Ce qui sort sur chaque écran (spectateurs, retours, autres salles), en direct">Outputs</button>
   </nav>
   <b class="show-name" id="show-name" title="Show en cours"></b>
   <span class="save" id="save-state"></span>
@@ -43,8 +44,8 @@
     <aside class="panel lib" id="lib"></aside>
     <div class="center">
       <div class="monitor" id="monitor">
-        <div class="mon-screen prep" id="mon-prep" hidden><canvas id="preview-prep"></canvas><svg class="mon-ov"></svg><span class="mon-label">Préparation</span></div>
-        <div class="mon-screen out" id="mon-out"><canvas id="preview"></canvas><svg class="mon-ov"></svg><span class="mon-label">Sortie</span><select class="mon-outsel" id="mon-outsel" hidden title="Quelle sortie regarder ici (la LED par défaut)"></select><span class="mon-tag" id="mon-tag"></span></div>
+        <div class="mon-screen prep" id="mon-prep" hidden><canvas id="preview-prep"></canvas><svg class="mon-ov"></svg><span class="mon-label">Préparation</span><i class="mon-grip" data-grip="prep" title="Tire pour agrandir ou réduire l'écran Préparation (double-clic : taille d'origine)"></i></div>
+        <div class="mon-screen out" id="mon-out"><canvas id="preview"></canvas><svg class="mon-ov"></svg><span class="mon-label">Sortie</span><select class="mon-outsel" id="mon-outsel" hidden title="Quelle sortie regarder ici (la LED par défaut)"></select><span class="mon-tag" id="mon-tag"></span><i class="mon-grip" data-grip="out" title="Tire pour agrandir ou réduire l'écran Sortie (double-clic : taille d'origine)"></i></div>
         <div class="mon-side" id="mon-side"></div>
       </div>
       <div class="hresizer" id="mon-resizer" title="Tire vers le bas ou le haut pour agrandir ou réduire les écrans (double-clic : taille d'origine)"></div>
@@ -59,6 +60,7 @@
   </section>
   <section class="view mapping" id="view-mapping" hidden></section>
   <section class="view reglages" id="view-reglages" hidden></section>
+  <section class="view outputs" id="view-outputs" hidden></section>
 </main>
 
 <input type="file" id="file-input" multiple accept="video/*,image/*,.pdf,.pptx,.ppt,.ppsx,.docx,.doc,.xlsx,.xls" hidden>

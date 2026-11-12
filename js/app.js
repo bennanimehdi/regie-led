@@ -745,15 +745,51 @@ function importPptLive(file) {
     x.send(file);
   });
 }
-/** PowerPoint, Word, Excel ou PDF : le serveur le convertit en images (une par page) rangées dans media/. */
-function importDoc(file) {
-  return new Promise((resolve, reject) => {
-    const x = new XMLHttpRequest(), max = Math.max(show.comp.w, show.comp.h);
-    x.open('POST', '/api/import-doc?name=' + encodeURIComponent(file.name) + '&max=' + max);
-    x.onload = () => { let r = {}; try { r = JSON.parse(x.responseText); } catch { /* réponse vide */ } x.status === 200 ? resolve(r) : reject(new Error(r.error || 'Conversion refusée')); };
-    x.onerror = () => reject(new Error('Conversion interrompue (le serveur local tourne-t-il toujours ?)'));
-    x.send(file);
-  });
+/* PDF lus par la régie elle-même avec pdf.js (Mozilla) : même résultat sur Mac et Windows, sans Office. Une image JPEG par page,
+ * envoyée au serveur qui range le tout comme un document converti (data/documents/<nom>/). */
+let pdfjsP = null;
+function pdfjsLib() {
+  if (!pdfjsP) pdfjsP = import('./pdf.min.js').then(m => { m.GlobalWorkerOptions.workerSrc = '/js/pdf.worker.min.js'; return m; }).catch(e => { pdfjsP = null; throw new Error('Lecteur PDF indisponible (' + e.message + ')'); });
+  return pdfjsP;
+}
+async function pdfToDoc(blob, name) {
+  const lib = await pdfjsLib();
+  let pdf;
+  try { pdf = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), isEvalSupported: false }).promise; }
+  catch (e) { throw new Error(/password/i.test(e?.name || e?.message) ? 'Ce PDF est protégé par un mot de passe : enregistre-le sans protection puis réimporte-le.' : 'Ce PDF n\'a pas pu être lu (fichier abîmé ?).'); }
+  const n = Math.min(pdf.numPages, 200), max = Math.max(show.comp.w, show.comp.h), tok = Math.random().toString(36).slice(2, 12);
+  try {
+    for (let i = 1; i <= n; i++) {
+      toast(`Lecture de « ${name} » — page ${i} / ${n}`, 'wait');
+      const page = await pdf.getPage(i), v1 = page.getViewport({ scale: 1 }), k = Math.min(4, max / Math.max(v1.width, v1.height));
+      const vp = page.getViewport({ scale: k }), cv = document.createElement('canvas');
+      cv.width = Math.max(1, Math.round(vp.width)); cv.height = Math.max(1, Math.round(vp.height));
+      const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);   // fond blanc : une page sans fond reste lisible
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const jpg = await new Promise(r => cv.toBlob(r, 'image/jpeg', 0.9));
+      const r = await fetch(`/api/doc-page?tok=${tok}&i=${i}`, { method: 'POST', body: jpg });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'Page refusée par le serveur');
+      page.cleanup(); cv.width = cv.height = 0;
+    }
+  } finally { pdf.destroy(); }
+  const r = await fetch(`/api/doc-done?tok=${tok}&name=${encodeURIComponent(name)}`, { method: 'POST' });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Document refusé par le serveur');
+  if (n < pdf.numPages) toast(`« ${name} » : seules les 200 premières pages ont été gardées.`, 'err');
+  return j;
+}
+/** PowerPoint, Word, Excel ou PDF → document à pages. PDF : lu ici (pdf.js). Office : converti par l'application installée ;
+ *  quand le serveur ne sait pas faire les images (Windows), il renvoie un PDF que la régie lit elle-même. */
+async function importDoc(file) {
+  if (/\.pdf$/i.test(file.name)) return pdfToDoc(file, file.name);
+  const max = Math.max(show.comp.w, show.comp.h);
+  let r;
+  try { r = await fetch('/api/import-doc?name=' + encodeURIComponent(file.name) + '&max=' + max, { method: 'POST', body: file }); }
+  catch { throw new Error('Conversion interrompue (le serveur local tourne-t-il toujours ?)'); }
+  if ((r.headers.get('content-type') || '').startsWith('application/pdf')) return pdfToDoc(await r.blob(), file.name);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || 'Conversion refusée');
+  return j;
 }
 async function uploadFiles(files) {
   const done = [], docs = [];
@@ -764,7 +800,7 @@ async function uploadFiles(files) {
         { value: 'images', label: 'En images', hint: 'Un document dont tu tournes les pages (◀ ▶ ou ← →). Images fixes, sans animations ; rien d\'autre à lancer pendant l\'événement.' },
       ]) === 'live') { await importPptLive(f); continue; }
       if (DOC_RE.test(f.name)) {
-        toast(`Conversion de « ${f.name} »… ${/\.pdf$/i.test(f.name) ? '' : 'L\'application Office va s\'ouvrir un instant ; cela peut prendre une minute.'}`, 'wait');
+        toast(/\.pdf$/i.test(f.name) ? `Lecture de « ${f.name} »…` : `Conversion de « ${f.name} »… L'application Office va s'ouvrir un instant ; cela peut prendre une minute.`, 'wait');
         docs.push(await importDoc(f));
       } else done.push(await uploadOne(f, p => toast(`Import ${i + 1}/${files.length} — ${Math.round(p * 100)} %`)));
     } catch (e) { toast(f.name + ' : ' + e.message, 'err'); }
@@ -772,7 +808,9 @@ async function uploadFiles(files) {
   addFiles([...done.map(d => d?.name), ...docs.map(d => d?.id && fileKeyDoc(d))]);
   await loadMedia(); renderLib();
   if (done.length) toast(done.length > 1 ? done.length + ' médias importés' : 'Média importé');
-  for (const d of docs) if (d?.id) addDocClip(d);                    // un document = un seul clip, dont on tourne les pages
+  // Un document va dans la médiathèque (rien dans la grille) : on le pose ensuite où on veut, comme un média.
+  const okDocs = docs.filter(d => d?.id);
+  if (okDocs.length) toast(okDocs.length > 1 ? `${okDocs.length} documents ajoutés à la médiathèque : glisse-les sur une case ou une forme.` : `« ${baseName(okDocs[0].name)} » (${okDocs[0].pages} page${okDocs[0].pages > 1 ? 's' : ''}) ajouté à la médiathèque : glisse-le sur une case ou une forme.`);
   return done.map(d => media.find(m => m.name === d.name)).filter(Boolean);
 }
 function clipFromMedia(m) {
@@ -1974,8 +2012,19 @@ const KEY_ACTIONS = [
 ];
 const KEY_NAMES = { Space: 'Espace', Enter: 'Entrée', Escape: 'Échap', Backspace: '⌫', Delete: 'Suppr', Tab: 'Tab', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
   Minus: '-', Equal: '=', Comma: ',', Period: '.', Slash: '/', Semicolon: ';', Quote: "'", BracketLeft: '[', BracketRight: ']', Backquote: '`', Backslash: '\\', Home: 'Début', End: 'Fin', PageUp: 'Page ↑', PageDown: 'Page ↓' };
+/* Lettres telles qu'elles sont imprimées sur le clavier : disposition réelle si Chrome la donne, sinon AZERTY français. */
+let kbdMap = null;
+try { navigator.keyboard?.getLayoutMap?.().then(m => { kbdMap = m; }).catch(() => {}); } catch { /* non disponible */ }
+const AZERTY = { KeyQ: 'A', KeyW: 'Z', KeyA: 'Q', KeyZ: 'W', Semicolon: 'M', KeyM: ',', Comma: ';', Period: ':', Slash: '=', BracketLeft: '^', BracketRight: '$', Quote: 'ù', Backslash: '`', Backquote: '@', Minus: ')', Equal: '-', IntlBackslash: '<' };
+function keyCap(code) {
+  if (/^Digit\d$/.test(code)) return code.slice(5);
+  if (KEY_NAMES[code] && !/^(Minus|Equal|Comma|Period|Slash|Semicolon|Quote|BracketLeft|BracketRight|Backquote|Backslash)$/.test(code)) return KEY_NAMES[code];
+  const m = kbdMap?.get(code);
+  if (m && m.trim()) return m.length === 1 ? m.toUpperCase() : m;
+  return AZERTY[code] || KEY_NAMES[code] || code.replace(/^Key/, '').replace(/^Numpad/, 'Pavé ');
+}
 function keyLabel(k) {
-  let n = KEY_NAMES[k.code] || k.code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Pavé ').replace(/^F(\d+)$/, 'F$1');
+  let n = keyCap(k.code);
   return (k.meta ? '⌘' : '') + (k.alt ? '⌥' : '') + (k.shift ? '⇧' : '') + n;
 }
 const keyMatch = (k, e) => k.code === e.code && !!k.shift === e.shiftKey && !!k.alt === e.altKey && !!k.meta === (e.metaKey || e.ctrlKey);
@@ -2048,6 +2097,48 @@ function setKey(k) {
   show.keys = show.keys.filter(x => !(x.code === k.code && !!x.shift === !!k.shift && !!x.alt === !!k.alt && !!x.meta === !!k.meta));
   show.keys.push(k); commit();
 }
+/** Raccourcis d'origine de la régie : [codes, ce qu'ils font]. */
+const BUILTIN_KEYS = [
+  [['Space'], 'Séquence suivante (conducteur)'], [['Enter', 'NumpadEnter'], 'Envoyer la préparation à la sortie (et fermer une forme dessinée)'],
+  [['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9'], 'Afficher la colonne de ce numéro (Maj : directement à la sortie)'],
+  [['KeyB'], 'Écran noir'], [['KeyT'], 'Taper le tempo'], [['Escape'], 'Tout désélectionner (et annuler un dessin)'],
+  [['Delete', 'Backspace'], 'Retirer les fichiers sélectionnés de la médiathèque ; pendant un dessin, enlever le dernier point'],
+  [['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'], 'Document ou PowerPoint : page précédente / suivante ; Mapping : déplacer la zone de 1 px (Maj : 10 px)'],
+  [['ArrowUp', 'ArrowDown'], 'Mapping : déplacer la zone de 1 px (Maj : 10 px)'], [['KeyF'], 'Plein écran (dans la fenêtre de sortie)'],
+];
+const KB_ROWS = [
+  [['Escape', 1.2], null, ['F1'], ['F2'], ['F3'], ['F4'], null, ['F5'], ['F6'], ['F7'], ['F8'], null, ['F9'], ['F10'], ['F11'], ['F12'], null, ['Home'], ['End'], ['PageUp'], ['PageDown']],
+  [['Backquote'], ['Digit1'], ['Digit2'], ['Digit3'], ['Digit4'], ['Digit5'], ['Digit6'], ['Digit7'], ['Digit8'], ['Digit9'], ['Digit0'], ['Minus'], ['Equal'], ['Backspace', 2], null, ['Delete']],
+  [['Tab', 1.5], ['KeyQ'], ['KeyW'], ['KeyE'], ['KeyR'], ['KeyT'], ['KeyY'], ['KeyU'], ['KeyI'], ['KeyO'], ['KeyP'], ['BracketLeft'], ['BracketRight'], ['Enter', 1.5]],
+  [['CapsLock', 1.8], ['KeyA'], ['KeyS'], ['KeyD'], ['KeyF'], ['KeyG'], ['KeyH'], ['KeyJ'], ['KeyK'], ['KeyL'], ['Semicolon'], ['Quote'], ['Backslash'], ['NumpadEnter', 1.2]],
+  [['ShiftLeft', 1.3], ['IntlBackslash'], ['KeyZ'], ['KeyX'], ['KeyC'], ['KeyV'], ['KeyB'], ['KeyN'], ['KeyM'], ['Comma'], ['Period'], ['Slash'], ['ShiftRight', 2.3], null, ['ArrowUp']],
+  [['ControlLeft', 1.3], ['AltLeft', 1.3], ['MetaLeft', 1.5], ['Space', 6.2], ['MetaRight', 1.5], ['AltRight', 1.3], null, ['ArrowLeft'], ['ArrowDown'], ['ArrowRight']],
+];
+const KB_NAMES = { Escape: 'Échap', Tab: 'Tab ⇥', CapsLock: 'Verr. maj', ShiftLeft: '⇧ Maj', ShiftRight: '⇧ Maj', ControlLeft: 'Ctrl', AltLeft: '⌥ Alt', AltRight: '⌥ Alt', MetaLeft: '⌘', MetaRight: '⌘', Space: 'Espace', Enter: 'Entrée ↵', NumpadEnter: 'Entrée pavé', Backspace: '⌫', Delete: 'Suppr', Home: 'Début', End: 'Fin', PageUp: 'Pg ↑', PageDown: 'Pg ↓' };
+/** Clavier complet : touches utilisées en vert (vif = tes raccourcis, foncé = ceux de la régie), libres en gris ; survol = ce qu'elle fait. */
+function openKeyboard() {
+  const uses = {};                                           // code → [{txt, mine}]
+  for (const [codes, txt] of BUILTIN_KEYS) for (const c of codes) (uses[c] ||= []).push({ txt, mine: false });
+  for (const k of show.keys) (uses[k.code] ||= []).push({ txt: `${keyLabel(k)} : ${KEY_ACTIONS.find(a => a[0] === k.action)?.[1] || k.action}${k.target ? ' — ' + keyTargetLabel(k) : ''}${keyScopeLabel(k) ? ' (' + keyScopeLabel(k) + ')' : ''}`, mine: true });
+  const keyHtml = ([code, w = 1]) => {
+    const u = uses[code] || [], mine = u.some(x => x.mine), lab = KB_NAMES[code] || keyCap(code);
+    const tip = u.length ? u.map(x => (x.mine ? '★ ' : '') + x.txt).join('\n') : 'Libre';
+    return `<span class="kb-k${mine ? ' mine' : u.length ? ' used' : ''}" style="flex:${w}" data-code="${esc(code)}" title="${esc(tip)}">${esc(lab)}</span>`;
+  };
+  const rows = KB_ROWS.map(r => `<div class="kb-row">${r.map(k => (k ? keyHtml(k) : '<span class="kb-gap"></span>')).join('')}</div>`).join('');
+  const d = openBox(`<h3>Clavier — touches utilisées</h3>
+    <p><span class="kb-legend mine"></span> Tes raccourcis &nbsp; <span class="kb-legend used"></span> Raccourcis de la régie &nbsp; <span class="kb-legend"></span> Libre. Survole une touche pour voir ce qu'elle fait (une touche peut servir avec Maj, ⌥ ou ⌘).</p>
+    <div class="kb">${rows}</div>
+    <div class="kb-info" id="kb-info">Survole une touche…</div>
+    <div class="row"><button class="btn" data-cancel>Fermer</button></div>`, 'kbd');
+  const info = d.querySelector('#kb-info');
+  d.addEventListener('mouseover', e => {
+    const k = e.target.closest('.kb-k'); if (!k) return;
+    const u = uses[k.dataset.code] || [];
+    info.innerHTML = `<b>${esc(KB_NAMES[k.dataset.code] || keyCap(k.dataset.code))}</b> — ` + (u.length ? u.map(x => `<span class="${x.mine ? 'mine' : ''}">${esc(x.txt)}</span>`).join('<br>') : 'libre : tu peux l\'utiliser pour un raccourci.');
+  });
+  d.addEventListener('click', e => { if (e.target.closest('[data-cancel]')) d.remove(); });
+}
 function keysPanel() {
   const rows = show.keys.map((k, i) => `<div class="key-row"><kbd>${esc(keyLabel(k))}</kbd><span>${esc(KEY_ACTIONS.find(a => a[0] === k.action)?.[1] || k.action)}${k.target ? ' — ' + esc(keyTargetLabel(k)) : ''}</span><small>${esc(keyScopeLabel(k))}</small><button class="x" data-key-del="${i}" title="Supprimer ce raccourci">✕</button></div>`).join('');
   const action = $('#key-action')?.value || 'clip', withScene = SCENE_ACTIONS.includes(action);
@@ -2063,17 +2154,43 @@ function keysPanel() {
 function bindResizers() {
   const view = $('#view-regie');
   // Hauteur des écrans Préparation / Sortie : poignée sous les écrans, mémorisée.
+  // Chaque écran (Préparation, Sortie) a sa propre hauteur, réglée par la poignée de son coin bas-droit ; la largeur suit (16:9).
+  // La poignée sous les écrans agrandit ou réduit les deux ensemble. Tout est mémorisé ; double-clic = taille d'origine.
   const center = $('.center'), mh = $('#mon-resizer');
-  const applyH = px => { if (px) center.style.setProperty('--monh', px + 'px'); else center.style.removeProperty('--monh'); renderShapes(); };
-  { const v = +localStorage.getItem('regieLed.monH'); if (v) applyH(v); }
-  mh?.addEventListener('pointerdown', e => {
-    e.preventDefault(); mh.setPointerCapture(e.pointerId); mh.classList.add('on'); document.body.classList.add('resizing');
-    const y0 = e.clientY, start = $('#mon-out').getBoundingClientRect().height;      // l'écran Sortie fait exactement la hauteur de base (la Préparation est 1,3 × plus grande)
-    const move = ev => { const h = Math.round(Math.max(50, Math.min(innerHeight * 0.7, start + ev.clientY - y0))); applyH(h); localStorage.setItem('regieLed.monH', String(h)); };
-    const up = () => { mh.classList.remove('on'); document.body.classList.remove('resizing'); mh.removeEventListener('pointermove', move); mh.removeEventListener('pointerup', up); mh.removeEventListener('pointercancel', up); };
-    mh.addEventListener('pointermove', move); mh.addEventListener('pointerup', up); mh.addEventListener('pointercancel', up);
+  let sizes = {};
+  try { sizes = JSON.parse(localStorage.getItem('regieLed.monSizes')) || {}; } catch { sizes = {}; }
+  { const old = +localStorage.getItem('regieLed.monH'); if (old && !sizes.out) { sizes.out = old; sizes.prep = Math.round(old * 1.3); } }   // ancien réglage unique
+  const VAR = { prep: '--preph', out: '--outh' };
+  const applySizes = () => { for (const k of ['prep', 'out']) { if (sizes[k]) center.style.setProperty(VAR[k], sizes[k] + 'px'); else center.style.removeProperty(VAR[k]); } renderShapes(); };
+  const saveSizes = () => { try { localStorage.setItem('regieLed.monSizes', JSON.stringify(sizes)); localStorage.removeItem('regieLed.monH'); } catch { /* sans gravité */ } };
+  const clampH = h => Math.round(Math.max(50, Math.min(innerHeight * 0.8, h)));
+  applySizes();
+  const dragOn = (el, onMove, cursor) => el?.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation(); el.setPointerCapture(e.pointerId); el.classList.add('on'); document.body.classList.add('resizing'); document.body.style.cursor = cursor;
+    const st = onMove(null, e);
+    const move = ev => onMove(st, ev);
+    const up = () => { el.classList.remove('on'); document.body.classList.remove('resizing'); document.body.style.cursor = ''; saveSizes(); el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
   });
-  mh?.addEventListener('dblclick', () => { applyH(0); localStorage.removeItem('regieLed.monH'); });
+  const hOf = id => $(id).getBoundingClientRect().height;
+  dragOn(mh, (st, e) => {
+    if (!st) return { y0: e.clientY, out: hOf('#mon-out'), prep: prepOn ? hOf('#mon-prep') : (sizes.prep || 0) };
+    const out = clampH(st.out + e.clientY - st.y0);
+    sizes.out = out; if (st.prep) sizes.prep = clampH(st.prep * out / st.out);
+    applySizes();
+  }, 'row-resize');
+  mh?.addEventListener('dblclick', () => { sizes = {}; applySizes(); saveSizes(); });
+  for (const g of $$('.mon-grip')) {
+    const k = g.dataset.grip, box = k === 'prep' ? '#mon-prep' : '#mon-out';
+    dragOn(g, (st, e) => {
+      if (!st) return { x0: e.clientX, y0: e.clientY, h: hOf(box) };
+      const dx = (e.clientX - st.x0) * 9 / 16, dy = e.clientY - st.y0;
+      sizes[k] = clampH(st.h + (Math.abs(dx) > Math.abs(dy) ? dx : dy));
+      applySizes();
+    }, 'nwse-resize');
+    g.addEventListener('dblclick', e => { e.stopPropagation(); delete sizes[k]; applySizes(); saveSizes(); });
+  }
   const apply = (key, px) => { if (px) view.style.setProperty(key === 'lib' ? '--libw' : '--rightw', px + 'px'); else view.style.removeProperty(key === 'lib' ? '--libw' : '--rightw'); };
   for (const key of ['lib', 'right']) { const v = +localStorage.getItem('regieLed.w.' + key); if (v) apply(key, v); }
   for (const [id, key] of [['#lib-resizer', 'lib'], ['#right-resizer', 'right']]) {
@@ -2154,16 +2271,32 @@ function snapCands(axis, except) {
   for (const z of show.slices) if (z !== except && !zoneIsFull(z)) { const s = z.src; if (axis === 'x') out.push(s.x, s.x + s.w / 2, s.x + s.w); else out.push(s.y, s.y + s.h / 2, s.y + s.h); }
   return out;
 }
+/** Aimant pour un déplacement : le bord gauche, le centre ou le bord droit (idem en hauteur) se cale sur l'image et les autres formes. */
+function snapMove(z, w, h, x, y) {
+  if (!snapOn) return [x, y];
+  const tol = Math.round(show.comp.w / 110), cx = snapCands('x', z), cy = snapCands('y', z);
+  const best = (v0, size, c) => { let d = 0, bd = tol + 1; for (const v of [v0, v0 + size / 2, v0 + size]) { const t = snapTo(v, c, tol); if (t !== v && Math.abs(t - v) < bd) { bd = Math.abs(t - v); d = t - v; } } return d; };
+  return [Math.round(x + best(x, w, cx)), Math.round(y + best(y, h, cy))];
+}
+/** Aimant pour un redimensionnement par la poignée `h` (0 HG, 1 HD, 2 BD, 3 BG) : les bords tirés se calent. */
+function snapEdges(z, h, x0, y0, x1, y1) {
+  if (!snapOn || z.src.rot) return [x0, y0, x1, y1];
+  const tol = Math.round(show.comp.w / 110), cx = snapCands('x', z), cy = snapCands('y', z);
+  if (h === 0 || h === 3) x0 = Math.min(snapTo(x0, cx, tol), x1 - 1); else x1 = Math.max(snapTo(x1, cx, tol), x0 + 1);
+  if (h === 0 || h === 1) y0 = Math.min(snapTo(y0, cy, tol), y1 - 1); else y1 = Math.max(snapTo(y1, cy, tol), y0 + 1);
+  return [x0, y0, x1, y1];
+}
 const ZCOLORS = ['#ffb300', '#00c2ff', '#ff4d6d', '#5ad65a', '#c77dff', '#ff8c42', '#f5f5f5'];
 const SHAPE_NAME = { rect: 'Rectangle', carre: 'Carré', losange: 'Losange', cercle: 'Cercle', triangle: 'Triangle', triangle2: 'Triangle', hexagone: 'Hexagone', libre: 'Forme' };
 const SHAPE_ICON = { rect: '▭', carre: '◻', losange: '◇', cercle: '◯', triangle: '△', triangle2: '▽', hexagone: '⬡' };
 const zoneById = id => show.slices.find(z => z.id === id);
-const zoneIsFull = z => ['rect', 'carre'].includes(z.shape || 'rect') && !z.src.rot && z.src.x <= 0 && z.src.y <= 0 && z.src.w >= show.comp.w && z.src.h >= show.comp.h;
+const zoneIsFull = z => !z.quad && ['rect', 'carre'].includes(z.shape || 'rect') && !z.src.rot && z.src.x <= 0 && z.src.y <= 0 && z.src.w >= show.comp.w && z.src.h >= show.comp.h;
 const zoneLayers = id => show.layers.filter(l => l.zone === id);
 const shapeHost = () => (prepOn ? $('#mon-prep') : $('#mon-out'));
 /** Tant qu'une zone n'a pas été placée à la main sur la sortie, elle y reste au même endroit que dans la composition. */
 function alignDst(z) {
   const kx = show.output.w / show.comp.w, ky = show.output.h / show.comp.h;
+  if (M.zoneQuad(z)) { z.dst = z.quad.map(([x, y]) => [Math.round(x * kx), Math.round(y * ky)]); return; }
   const x0 = Math.round(z.src.x * kx), y0 = Math.round(z.src.y * ky), x1 = Math.round((z.src.x + z.src.w) * kx), y1 = Math.round((z.src.y + z.src.h) * ky);
   z.dst = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
 }
@@ -2192,7 +2325,44 @@ function worldToZone(z, wx, wy) {
 /** Contours de la zone en px du repère local (cadre non tourné). */
 const localGroups = z => { const s = z.src; return M.shapeGroups(z).map(g => g.map(([u, v]) => [s.x + u * s.w, s.y + v * s.h])); };
 /** Contours de la zone en px de la composition, rotation comprise. */
-const zoneWorldPolys = z => localGroups(z).map(g => g.map(([x, y]) => zoneToWorld(z, x, y)));
+const zoneWorldPolys = z => (M.zoneQuad(z) ? M.shapeGroups(z).map(g => g.map(([u, v]) => M.zonePoint(z, u, v))) : localGroups(z).map(g => g.map(([x, y]) => zoneToWorld(z, x, y))));
+/* ---- coins libres dans la composition : z.quad (4 points), z.src = boîte englobante ---- */
+function syncQuad(z) {
+  const { comp } = show;
+  z.quad = z.quad.map(([x, y]) => [Math.round(M.clamp(x, 0, comp.w)), Math.round(M.clamp(y, 0, comp.h))]);
+  const b = M.quadBounds(z.quad);
+  z.src = { x: b.x, y: b.y, w: Math.max(1, b.w), h: Math.max(1, b.h), rot: 0 };
+  if (!z.custom) alignDst(z);
+}
+/** Active ou retire les coins libres d'une forme. Activer part de ses 4 coins actuels (rotation comprise). */
+function toggleQuad(z) {
+  if (!z) return;
+  if (M.zoneQuad(z)) { delete z.quad; syncSrcFromQuadOff(z); toast(`« ${z.name} » redevient un rectangle (sa boîte englobante).`); }
+  else {
+    z.quad = [[0, 0], [1, 0], [1, 1], [0, 1]].map(([u, v]) => M.zonePoint(z, u, v));
+    syncQuad(z);
+    toast(`Coins libres sur « ${z.name} » : tire chaque coin (rond doré) pour épouser l'écran ; l'image se déforme avec.`);
+  }
+  commit(); renderShapeBar(); renderShapes(); renderInspector(); mapping?.refresh(true);
+}
+function syncSrcFromQuadOff(z) { z.src.rot = 0; clampZone(z); }
+/** Déplace une forme à coins libres (oq = coins au départ, o = boîte au départ), avec l'aimant. */
+function quadMove(z, oq, o, dx, dy, magnet = true) {
+  const [x, y] = magnet ? snapMove(z, o.w, o.h, o.x + dx, o.y + dy) : [o.x + dx, o.y + dy];
+  const { comp } = show, X = M.clamp(x, 0, comp.w - o.w), Y = M.clamp(y, 0, comp.h - o.h);
+  z.quad = oq.map(([px, py]) => [px + X - o.x, py + Y - o.y]);
+  syncQuad(z);
+}
+/** Déplace un seul coin (k) d'une forme à coins libres ; l'aimant le cale sur l'image, les autres formes et ses propres coins. */
+function quadCorner(z, oq, k, px, py) {
+  if (snapOn) {
+    const tol = Math.round(show.comp.w / 110), cx = snapCands('x', z), cy = snapCands('y', z);
+    oq.forEach((p, i) => { if (i !== k) { cx.push(p[0]); cy.push(p[1]); } });
+    px = snapTo(px, cx, tol); py = snapTo(py, cy, tol);
+  }
+  z.quad = oq.map(p => [...p]); z.quad[k] = [px, py];
+  syncQuad(z);
+}
 /** Après modification des sommets (px locaux) : nouveau cadre, points renormalisés, rotation et centre conservés. */
 function refitPoly(z, groups) {
   const xs = groups.flat().map(p => p[0]), ys = groups.flat().map(p => p[1]);
@@ -2469,7 +2639,8 @@ function renderShapeBar() {
   } else if (z) {
     edit = `<input type="text" class="sb-name" data-zf="name" value="${esc(z.name)}" title="Nom de la forme">
       <select data-zf="shape" title="Forme">${M.shapeOptions(z).map(([v, t]) => `<option value="${v}"${(z.shape || 'rect') === v ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>
-      <label>Rotation <input type="number" data-zf="rot" step="5" min="-180" max="180" value="${Math.round(z.src.rot || 0)}" title="Ou tire la poignée ronde au-dessus de la forme"> °</label>
+      ${z.quad ? '' : `<label>Rotation <input type="number" data-zf="rot" step="5" min="-180" max="180" value="${Math.round(z.src.rot || 0)}" title="Ou tire la poignée ronde au-dessus de la forme"> °</label>`}
+      <button class="btn sm${z.quad ? ' on' : ''}" data-act="shape-quad" title="${z.quad ? 'Revenir à un rectangle (sa boîte englobante)' : 'Chaque coin se déplace seul : écran en biais, trapèze, perspective. L\'image se déforme avec.'}">⬚ Coins libres</button>
       <label class="chk" title="La forme cache ce qui est derrière elle (fond, autres calques)"><input type="checkbox" data-zf="opaque"${zoneLayers(z.id).some(l => l.opaque) ? ' checked' : ''}> Fond noir</label>
       ${z.shape === 'libre' && z.extra?.length ? `<button class="btn sm" data-act="shape-split" title="Défait la fusion : chaque morceau redevient une forme à part">⤮ Séparer (${z.extra.length + 1})</button>` : ''}
       <button class="btn sm danger" data-act="shape-del">Supprimer la forme</button>
@@ -2507,6 +2678,13 @@ function renderShapes() {
   show.slices.forEach((z, i) => {
     if (zoneIsFull(z)) return;
     const c = ZCOLORS[i % ZCOLORS.length], on = z.id === zoneSel, multi = zoneMulti.has(z.id), s = z.src;
+    if (M.zoneQuad(z)) {                                     // coins libres : contour déformé + un rond doré par coin
+      const q = z.quad, polys = zoneWorldPolys(z).map(g => `<polygon class="zo${on ? ' sel' : ''}${multi ? ' multi' : ''}" data-zone="${z.id}" points="${g.map(p => p.join(',')).join(' ')}" stroke="${c}"/>`).join('');
+      h += `<g>${on ? `<polygon class="zo-box" points="${q.map(p => p.join(',')).join(' ')}"/>` : ''}${polys}
+        <text class="zo-l" x="${s.x + s.w / 2}" y="${s.y + s.h + 16 * u}" text-anchor="middle" font-size="${12 * u}" fill="${c}">${esc(z.name)}</text>
+        ${on ? q.map((p, k) => `<circle class="zo-v" data-zone="${z.id}" data-q="${k}" cx="${p[0]}" cy="${p[1]}" r="${6 * u}"><title>Tirer ce coin</title></circle>`).join('') : ''}</g>`;
+      return;
+    }
     const groups = localGroups(z);
     const polys = groups.map(g => `<polygon class="zo${on ? ' sel' : ''}${multi ? ' multi' : ''}" data-zone="${z.id}" points="${g.map(p => p.join(',')).join(' ')}" stroke="${c}"/>`).join('');
     const verts = on && z.shape === 'libre' ? groups.map((g, pg) => g.map((q, v) => { const n = g[(v + 1) % g.length]; return `<circle class="zo-m" data-zone="${z.id}" data-pg="${pg}" data-m="${v}" cx="${(q[0] + n[0]) / 2}" cy="${(q[1] + n[1]) / 2}" r="${3.5 * u}"><title>Ajouter un point ici</title></circle><circle class="zo-v" data-zone="${z.id}" data-pg="${pg}" data-v="${v}" cx="${q[0]}" cy="${q[1]}" r="${4.5 * u}"><title>Déplacer ce point (Alt+clic : l'enlever)</title></circle>`; }).join('')).join('') : '';
@@ -2530,6 +2708,11 @@ function bindShapes() {
     e.preventDefault();
     const sv = el.closest('svg'), h = el.dataset.h != null ? +el.dataset.h : null, start = pt(e, sv);
     if (e.shiftKey && el.classList.contains('zo')) return toggleMulti(z.id);           // Maj+clic : sélection multiple (fusion)
+    if (M.zoneQuad(z)) {                                                                // coins libres : un coin, ou toute la forme
+      if (zoneSel !== z.id) selectZone(z.id);
+      zDrag = { sv, start, src: { ...z.src }, quad: z.quad.map(p => [...p]), qk: el.dataset.q != null ? +el.dataset.q : null };
+      return;
+    }
     if (el.dataset.v != null || el.dataset.m != null) {                                 // sommet d'une forme dessinée
       if (zoneSel !== z.id) selectZone(z.id);
       const pg = +el.dataset.pg;
@@ -2546,6 +2729,11 @@ function bindShapes() {
     if (!z) return;
     const [px, py] = pt(e, zDrag.sv), dx = Math.round(px - zDrag.start[0]), dy = Math.round(py - zDrag.start[1]), o = zDrag.src, { comp } = show;
     const tol = Math.round(comp.w / 110);                                  // aimant : ~1 % de la largeur de l'image
+    if (zDrag.quad) {
+      if (zDrag.qk != null) quadCorner(z, zDrag.quad, zDrag.qk, zDrag.quad[zDrag.qk][0] + dx, zDrag.quad[zDrag.qk][1] + dy);
+      else quadMove(z, zDrag.quad, o, dx, dy);
+      commit(); renderShapes(); mapping?.refresh(false); return;
+    }
     if (zDrag.vert) { setVertex(z, zDrag.vert.pg, zDrag.vert.v, [px, py]); commit(); renderShapes(); mapping?.refresh(false); return; }
     if (zDrag.rot) {                                                       // poignée de rotation : angle entre le centre et la souris
       const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
@@ -2622,6 +2810,7 @@ function bindShapes() {
     if (act === 'shape-draw') return drawing ? cancelDraw() : startDraw();
     if (act === 'draw-done') return finishDraw();
     if (act === 'draw-cancel') return cancelDraw();
+    if (act === 'shape-quad') return toggleQuad(zoneById(zoneSel));
     if (act === 'shapes-merge') return mergeShapes();
     if (act === 'shape-split') return splitShape();
     if (act === 'shapes-unsel') { zoneMulti.clear(); renderShapeBar(); renderShapes(); mapping?.refresh(false); return; }
@@ -2661,7 +2850,8 @@ function setTab(t) {
   if (drawing && t !== tab) cancelDraw();
   tab = t;
   for (const b of $$('#tabs [data-tab]')) b.classList.toggle('on', b.dataset.tab === t);
-  for (const v of ['regie', 'mapping', 'reglages']) $('#view-' + v).hidden = v !== t;
+  for (const v of ['regie', 'mapping', 'reglages', 'outputs']) $('#view-' + v).hidden = v !== t;
+  if (t === 'outputs') renderOutputsView();
   if (t === 'mapping') mapping.render();
   if (t === 'reglages') renderSettings();
   if (t === 'regie') { if (zoneSel && !zoneById(zoneSel)) zoneSel = null; renderGrid(); renderShapeBar(); renderShapes(); }
@@ -2685,7 +2875,7 @@ function renderSettings() {
       <div class="row"><button class="btn" data-act="screens">Détecter les écrans</button></div>
       ${outputsPanel()}
       <p class="note">Branchement : une sortie HDMI de l'ordinateur par contenu différent (LED, retour conférenciers, autre salle), chacune en « bureau étendu » (pas en recopie). Les écrans qui montrent la même image se branchent sur un splitter HDMI. La sortie principale porte le mapping (onglet Mapping) et le son ; les autres montrent toute la composition ou une zone en plein cadre, sans leurs calques masqués (réglage « Visible sur » de chaque calque).</p></div></div>
-    <div class="panel"><div class="panel-h"><h3>Raccourcis clavier</h3></div><div class="fields keys">
+    <div class="panel"><div class="panel-h"><h3>Raccourcis clavier</h3><button class="btn sm" data-act="kbd-show" title="Le clavier entier : touches déjà utilisées en vert, survol = ce qu'elles font">⌨ Voir le clavier</button></div><div class="fields keys">
       <div><kbd>Espace</kbd> Séquence suivante</div><div><kbd>Entrée</kbd> Envoyer la préparation à la sortie</div><div><kbd>1</kbd>…<kbd>9</kbd> Afficher une colonne (<kbd>Maj</kbd> : directement à la sortie)</div><div><kbd>B</kbd> Écran noir</div>
       <div><kbd>T</kbd> Taper le tempo</div><div><kbd>←</kbd> <kbd>→</kbd> PowerPoint en direct : précédent / suivant</div><div><kbd>Échap</kbd> Désélectionner</div><div><kbd>F</kbd> Plein écran (dans la fenêtre de sortie)</div>
       <div><kbd>←↑↓→</kbd> Mapping : déplacer la zone de 1 px (<kbd>Maj</kbd> = 10 px)</div>
@@ -2693,6 +2883,71 @@ function renderSettings() {
     <div class="panel"><div class="panel-h"><h3>Formats conseillés</h3></div><div class="fields">
       <p class="note">Vidéos : <b>MP4 (H.264)</b>, 1080p, 25 ou 30 i/s — c'est le format le plus fluide. MOV et WebM fonctionnent aussi ; ProRes et HAP ne sont pas lus par le navigateur. Documents : <b>PowerPoint, Word, Excel et PDF</b> sont convertis en images fixes, une par diapositive ou par page (sans animations). Images : PNG (la transparence est conservée, idéal pour les logos), JPG, WebP, SVG. Captures (« ⏺ Capturer une source ») : MP4 H.264 quand Chrome sait l'écrire, sinon WebM ; photos en JPG.</p></div></div>
   </div>`;
+}
+/* ---------- onglet Outputs : ce qui sort sur chaque écran, en direct ---------- */
+/** Nouvelle sortie (Réglages ou onglet Outputs). */
+async function addOutputAsk() {
+  if (show.outputs.length >= 6) return toast('6 sorties maximum.', 'err');
+  const n = await askText('Nom de la sortie', show.outputs.length === 1 ? 'Retour conférenciers' : 'Sortie ' + (show.outputs.length + 1), { max: 40, ok: 'Créer', hint: 'Par exemple : Retour conférenciers, Salle B, Hall d\'accueil.' });
+  if (n === null) return;
+  show.outputs.push(M.newOutput(show, n.trim().slice(0, 40) || undefined)); commit(); renderGrid(); renderInspector(); updatePlaying();
+  if (tab === 'reglages') renderSettings(); if (tab === 'outputs') renderOutputsView();
+  toast('Sortie créée. Choisis ce qu\'elle montre et les calques visibles, puis « Ouvrir » sur le bon écran.');
+}
+function outputStatus(o) {
+  if (!outIsOpen(o.id)) return 'Fenêtre fermée';
+  const inf = o.id === 'main' ? outInfo : outInfos[o.id];
+  return `${inf.w}×${inf.h} · ${inf.fps} i/s${inf.fs ? ' · plein écran' : ' · fenêtre'}`;
+}
+function renderOutputsView() {
+  const v = $('#view-outputs'); if (!v) return;
+  const layers = [...M.layersFor(show, live)].reverse(), zones = show.slices.filter(z => !zoneIsFull(z));
+  v.innerHTML = `<div class="oc-top"><h3>Outputs</h3><span class="note">Ce qui sort sur chaque écran, en direct. Les calques décochés n'apparaissent pas sur cette sortie.</span><span class="spacer"></span><button class="btn sm gold" data-act="out-add">＋ Sortie</button></div>
+    <div class="oc-grid">${show.outputs.map(o => {
+      const main = o.id === 'main', on = outIsOpen(o.id);
+      return `<div class="oc${main ? ' main' : ''}${on ? ' on' : ''}" data-out="${esc(o.id)}">
+        <div class="oc-h"><span class="out-dot"></span><input type="text" data-out-f="name" data-out="${esc(o.id)}" value="${esc(o.name)}" title="Nom de la sortie">
+          <span class="oc-badge">${main ? 'MASTER · spectateurs' : 'Sortie ' + (show.outputs.indexOf(o) + 1)}</span>
+          <button class="btn sm${on ? '' : ' gold'}" data-act="out-open" data-out="${esc(o.id)}">${on ? 'Rouvrir' : 'Ouvrir'}</button></div>
+        <div class="oc-screen"><canvas data-outcv="${esc(o.id)}"></canvas><span class="oc-st" data-outst="${esc(o.id)}">${esc(outputStatus(o))}</span></div>
+        <div class="oc-f">${main ? '<span class="note">Toute la composition, avec le mapping (onglet Mapping) et le son.</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie"><option value="comp"${o.mode !== 'zone' ? ' selected' : ''}>Toute la composition</option>${zones.map(z => `<option value="zone:${esc(z.id)}"${o.mode === 'zone' && o.zoneId === z.id ? ' selected' : ''}>Zone « ${esc(z.name)} » en plein cadre</option>`).join('')}</select>`}</div>
+        <div class="oc-layers">${layers.map(l => `<label class="chip${o.hidden.includes(l.id) ? '' : ' on'}" title="${o.hidden.includes(l.id) ? 'Masqué sur cette sortie : clic pour l\'afficher' : 'Visible sur cette sortie : clic pour le masquer'}"><input type="checkbox" data-outlayer="${esc(o.id)}|${esc(l.id)}"${o.hidden.includes(l.id) ? '' : ' checked'}>${esc(l.name)}</label>`).join('')}</div>
+      </div>`;
+    }).join('')}</div>`;
+}
+function bindOutputsView() {
+  const v = $('#view-outputs');
+  v.addEventListener('click', e => {
+    const act = e.target.closest('[data-act]')?.dataset.act, id = e.target.closest('[data-out]')?.dataset.out;
+    if (act === 'out-add') return addOutputAsk();
+    if (act === 'out-open' && id) return openOutput(id);
+  });
+  v.addEventListener('change', e => {
+    const t = e.target;
+    if (t.dataset.outlayer) {
+      const [oid, lid] = t.dataset.outlayer.split('|'), o = M.outputById(show, oid);
+      o.hidden = o.hidden.filter(x => x !== lid); if (!t.checked) o.hidden.push(lid);
+      t.closest('.chip')?.classList.toggle('on', t.checked);
+      commit(); renderGrid(); return;
+    }
+    const f = t.dataset.outF, o = f && M.outputById(show, t.dataset.out);
+    if (!o) return;
+    if (f === 'name') { o.name = t.value.trim().slice(0, 40) || o.name; t.value = o.name; renderGrid(); updatePlaying(); }
+    if (f === 'mode') { if (t.value.startsWith('zone:')) { o.mode = 'zone'; o.zoneId = t.value.slice(5); } else { o.mode = 'comp'; o.zoneId = ''; } }
+    commit();
+  });
+}
+/** Dessine chaque sortie dans sa vignette (avec ses calques masqués), à partir du moteur de la régie. */
+function drawOutputsView() {
+  if (!eng) return;
+  for (const o of show.outputs) {
+    const cv = $(`#view-outputs canvas[data-outcv="${CSS.escape(o.id)}"]`); if (!cv) continue;
+    eng.hideLayers = o.hidden.length ? new Set(o.hidden) : null;
+    eng.frame();
+    if (o.id === 'main') drawView('output', cv);
+    else { const zone = o.mode === 'zone' && show.slices.find(z => z.id === o.zoneId); drawView(zone ? 'zone' : 'comp', cv, eng, zone || null); }
+  }
+  eng.hideLayers = null;
 }
 /** Liste des sorties dans Réglages : nom, ce qu'elle montre, écran, ouvrir, supprimer. */
 function outputsPanel() {
@@ -2739,13 +2994,8 @@ function bindSettings() {
     }
     if (act === 'screens') { await loadScreens(true); renderSettings(); if (!screens) toast('Détection des écrans indisponible ou refusée sur ce navigateur.', 'err'); }
     const outId = e.target.closest('[data-out]')?.dataset.out;
-    if (act === 'out-add') {
-      if (show.outputs.length >= 6) return toast('6 sorties maximum.', 'err');
-      const n = await askText('Nom de la sortie', show.outputs.length === 1 ? 'Retour conférenciers' : 'Sortie ' + (show.outputs.length + 1), { max: 40, ok: 'Créer' });
-      if (n === null) return;
-      show.outputs.push(M.newOutput(show, n.trim().slice(0, 40))); commit(); renderSettings(); renderGrid(); renderInspector(); updatePlaying();
-      return toast('Sortie créée. Choisis ce qu\'elle montre, son écran, puis « Ouvrir ». Dans chaque calque, « Visible sur » décide ce qui y apparaît.');
-    }
+    if (act === 'kbd-show') return openKeyboard();
+    if (act === 'out-add') return addOutputAsk();
     if (act === 'out-open' && outId) return openOutput(outId);
     if (act === 'out-del' && outId) {
       const o = M.outputById(show, outId); if (!o || o.id === 'main') return;
@@ -2845,6 +3095,7 @@ function loop(t) {
       } else { drawView('comp', $('#preview')); if (engOut2) { engOut2.reset(); } }
     }
     else if (tab === 'mapping') mapping.frame();
+    else if (tab === 'outputs') drawOutputsView();
   }
   if (prepOn && engPrep && tab === 'regie') {
     prep.beat0 = live.beat0; engPrep.audio = eng ? eng.audio : 0.5;
@@ -2857,6 +3108,11 @@ function loop(t) {
   if (t - slowT > 250) {
     slowT = t;
     updateOutStatus();
+    if (tab === 'outputs') for (const o of show.outputs) {             // état de chaque fenêtre de sortie
+      const st = $(`#view-outputs [data-outst="${CSS.escape(o.id)}"]`), on = outIsOpen(o.id), card = st?.closest('.oc');
+      if (st && st.textContent !== outputStatus(o)) st.textContent = outputStatus(o);
+      if (card && card.classList.contains('on') !== on) { card.classList.toggle('on', on); const b = card.querySelector('[data-act="out-open"]'); if (b) { b.textContent = on ? 'Rouvrir' : 'Ouvrir'; b.classList.toggle('gold', !on); } }
+    }
     if (placeShapes()) renderShapes();          // l'aperçu a changé de taille : on recale les contours
     if (eng && tab === 'regie') for (const el of $$('#grid .cell.playing')) {
       const p = eng.progress(el.dataset.layer);
@@ -2901,8 +3157,8 @@ async function boot() {
   mapping = initMapping({
     root: $('#view-mapping'), show: () => show, live: () => live, out: () => (Date.now() - outSeen < 2600 ? outInfo : null),
     commit, drawView: (view, cv) => drawView(view, cv), toast, refresh: () => { updatePlaying(); }, addLayerForZone, layersOfZone: id => show.layers.filter(l => l.zone === id).map(l => l.name),
-    zoneSel: () => zoneSel, selectZone, shapeBar: () => { renderShapeBar(); if (drawing) renderDraw(); }, squarify,
-    multi: id => zoneMulti.has(id), toggleMulti, snapOn: () => snapOn, localGroups, setVertex, insertVertex, deleteVertex, afterEdit: () => { renderShapes(); },
+    zoneSel: () => zoneSel, selectZone, syncQuad, toggleQuad, quadMove, quadCorner, zonePoint: M.zonePoint, shapeBar: () => { renderShapeBar(); if (drawing) renderDraw(); }, squarify,
+    multi: id => zoneMulti.has(id), toggleMulti, snapOn: () => snapOn, snapMove, snapEdges, localGroups, setVertex, insertVertex, deleteVertex, afterEdit: () => { renderShapes(); },
   });
   await loadMedia();
   window.regieDesktop?.onUpdate?.(m => toast(m.text));                 // application de bureau : mise à jour disponible ou prête
@@ -2915,7 +3171,7 @@ async function boot() {
       outputs: show.outputs.map(o => ({ id: o.id, name: o.name, mode: o.mode, hidden: o.hidden.length, open: outIsOpen(o.id) })) }) }).catch(() => {});
   }, 3000);
   listCams(false).then(() => { for (const c of camKnown) c.seen = camDevices.some(d => d.deviceId === c.deviceId); saveCams(); if (camDevices.some(d => d.label)) renderLib(); });   // sources déjà autorisées : liste à jour sans rien demander
-  bindTop(); bindLib(); bindGrid(); bindCues(); bindInspector(); bindSettings(); bindShapes(); bindScenes();
+  bindTop(); bindLib(); bindGrid(); bindCues(); bindInspector(); bindSettings(); bindShapes(); bindScenes(); bindOutputsView();
   renderAll();
   $('#save-state').textContent = data ? 'Enregistré' : '';
   push();

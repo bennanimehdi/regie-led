@@ -6,7 +6,7 @@
  *   3. present('comp')   affiche la composition telle quelle (aperçu) ;
  *      present('output') découpe la composition en zones et pose chaque zone sur la sortie HDMI (mapping).
  */
-import { hexToRgb, sliceMatrix, SHAPE_INDEX, shapePoints, shapeGroups, validPoly, fullQuad } from './model.js';
+import { hexToRgb, sliceMatrix, SHAPE_INDEX, shapePoints, shapeGroups, validPoly, fullQuad, zoneQuad, zonePoint, squareToQuad } from './model.js';
 import { createSource, sourceSig } from './sources.js';
 
 const VERT = `#version 300 es
@@ -23,6 +23,7 @@ uniform vec4 u_crop;
 uniform vec2 u_res;
 uniform float u_rrot;
 uniform int u_zshape;
+uniform int u_zq; uniform vec3 u_zh0, u_zh1, u_zh2;   // zone à coins libres : composition (y vers le bas) → carré de la zone
 uniform sampler2D u_mask;                           // forme libre (u_zshape == 6) : masque dessiné à la main
 uniform float u_rot, u_aspect, u_alpha, u_beat, u_audio;
 uniform float u_bri, u_con, u_sat, u_hue, u_inv, u_pix, u_rgb, u_strobe, u_pulse, u_zoom, u_audioAmt, u_tintAmt;
@@ -39,7 +40,12 @@ vec4 samp(vec2 uv){
 }
 void main(){
   vec2 uv;
-  if (u_rrot != 0.) {                                 // zone tournée (écran en losange) : repère local de la zone
+  if (u_zq == 1) {                                    // zone à coins libres : homographie inverse vers le carré de la zone
+    vec3 hp = vec3(v_uv.x, 1. - v_uv.y, 1.), hq = vec3(dot(u_zh0, hp), dot(u_zh1, hp), dot(u_zh2, hp));
+    if (hq.z <= 1e-7) { o = vec4(0.); return; }
+    uv = vec2(hq.x/hq.z, 1. - hq.y/hq.z);
+  }
+  else if (u_rrot != 0.) {                            // zone tournée (écran en losange) : repère local de la zone
     vec2 ps = (v_uv - (u_rect.xy + u_rect.zw*0.5))*u_res; ps.y = -ps.y;
     float cr = cos(u_rrot), sr = sin(u_rrot);
     vec2 l = vec2(cr*ps.x + sr*ps.y, -sr*ps.x + cr*ps.y);
@@ -93,6 +99,7 @@ const FRAG_MAP = `#version 300 es
 precision highp float;
 in vec2 v_uv; out vec4 o;
 uniform sampler2D u_tex, u_mask; uniform vec3 u_h0, u_h1, u_h2; uniform vec4 u_src; uniform vec2 u_res; uniform float u_mul, u_rot; uniform int u_shape;
+uniform int u_sq; uniform vec3 u_sh0, u_sh1, u_sh2;          // zone à coins libres : carré de la zone → composition
 void main(){
   vec3 p = vec3(v_uv.x, 1. - v_uv.y, 1.);
   vec3 q = vec3(dot(u_h0,p), dot(u_h1,p), dot(u_h2,p));
@@ -107,7 +114,8 @@ void main(){
   if (u_shape == 5 && m.y > 0.5 - 0.5*m.x) discard;
   if (u_shape == 6 && texture(u_mask, vec2(uv.x, 1. - uv.y)).r < 0.5) discard;   // forme libre : masque (v vers le haut)
   vec2 c = u_src.xy + uv*u_src.zw;
-  if (u_rot != 0.) {
+  if (u_sq == 1) { vec3 sp = vec3(uv, 1.), sr = vec3(dot(u_sh0, sp), dot(u_sh1, sp), dot(u_sh2, sp)); c = sr.xy/sr.z; }
+  else if (u_rot != 0.) {
     vec2 d = (uv - 0.5)*u_src.zw*u_res; float cr = cos(u_rot), sr = sin(u_rot);
     c = (u_src.xy + u_src.zw*0.5) + vec2(cr*d.x - sr*d.y, sr*d.x + cr*d.y)/u_res;
     if (c.x < 0. || c.x > 1. || c.y < 0. || c.y > 1.) discard;
@@ -241,10 +249,7 @@ export class Engine {
 
   /** Rapproche l'état de lecture de chaque calque de ce que demande `live` (lancement, fondu, arrêt). */
   /** Calques à rendre : ceux de la scène que l'état de lecture désigne (live.sceneId), sinon la scène en cours d'édition. */
-  layers() {
-    const { show, live } = this, all = (live?.sceneId && show.scenes?.find(s => s.id === live.sceneId)?.layers) || show.layers;
-    return this.hideLayers?.size ? all.filter(l => !this.hideLayers.has(l.id)) : all;
-  }
+  layers() { const { show, live } = this; return (live?.sceneId && show.scenes?.find(s => s.id === live.sceneId)?.layers) || show.layers; }
   syncLayers(now) {
     const { show, live } = this, layers = this.layers();
     for (const layer of layers) {
@@ -288,6 +293,14 @@ export class Engine {
     for (const id of this.masks.keys()) if (!this.show.slices.some(x => x.id === id)) { gl.deleteTexture(this.masks.get(id).tex); this.masks.delete(id); }
     return m.tex;
   }
+  /** Programme map : la zone source est-elle un quadrilatère (coins libres dans la composition) ? */
+  srcQuad(u, z) {
+    const gl = this.gl, q = zoneQuad(z);
+    gl.uniform1i(u.u_sq, q ? 1 : 0);
+    if (!q) return;
+    const { comp } = this.show, m = squareToQuad(q.map(([x, y]) => [x / comp.w, y / comp.h]));
+    gl.uniform3f(u.u_sh0, m[0], m[1], m[2]); gl.uniform3f(u.u_sh1, m[3], m[4], m[5]); gl.uniform3f(u.u_sh2, m[6], m[7], m[8]);
+  }
   /** Lie le masque d'une zone à l'unité de texture 1 (programme src ou map). */
   bindMask(u, tex) {
     const gl = this.gl;
@@ -301,8 +314,12 @@ export class Engine {
     const z = id && this.show.slices.find(x => x.id === id);
     if (!z) return null;
     const { comp } = this.show;
-    const mask = this.maskTex(z);
-    return { x: z.src.x / comp.w, y: z.src.y / comp.h, w: z.src.w / comp.w, h: z.src.h / comp.h, px: z.src.w, py: z.src.h, rot: (+z.src.rot || 0) * Math.PI / 180, shape: z.shape === 'libre' ? (mask ? 6 : 0) : (SHAPE_INDEX[z.shape] || 0), mask };
+    const mask = this.maskTex(z), q = zoneQuad(z), shape = z.shape === 'libre' ? (mask ? 6 : 0) : (SHAPE_INDEX[z.shape] || 0);
+    if (q) {                                            // coins libres : le contenu est déformé dans le quadrilatère
+      const L = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+      return { x: z.src.x / comp.w, y: z.src.y / comp.h, w: z.src.w / comp.w, h: z.src.h / comp.h, px: (L(q[0], q[1]) + L(q[3], q[2])) / 2, py: (L(q[0], q[3]) + L(q[1], q[2])) / 2, rot: 0, shape, mask, H: sliceMatrix({ dst: q }, comp.w, comp.h) };
+    }
+    return { x: z.src.x / comp.w, y: z.src.y / comp.h, w: z.src.w / comp.w, h: z.src.h / comp.h, px: z.src.w, py: z.src.h, rot: (+z.src.rot || 0) * Math.PI / 180, shape, mask };
   }
 
   drawSource(e, clip, alpha, fx, env, rect) {
@@ -318,6 +335,8 @@ export class Engine {
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, src.tex); gl.uniform1i(u.u_tex, 0);
     if (rect) gl.uniform4f(u.u_rect, rect.x, 1 - rect.y - rect.h, rect.w, rect.h); else gl.uniform4f(u.u_rect, 0, 0, 1, 1);
     gl.uniform2f(u.u_res, this.cw, this.ch); gl.uniform1f(u.u_rrot, rect ? rect.rot : 0); gl.uniform1i(u.u_zshape, rect ? rect.shape : 0);
+    const H = rect?.H; gl.uniform1i(u.u_zq, H ? 1 : 0);
+    if (H) { gl.uniform3f(u.u_zh0, H[0], H[1], H[2]); gl.uniform3f(u.u_zh1, H[3], H[4], H[5]); gl.uniform3f(u.u_zh2, H[6], H[7], H[8]); }
     this.bindMask(u, rect?.mask);
     gl.uniform4f(u.u_crop, cl, cb, 1 - cr, 1 - ct);
     gl.uniform2f(u.u_size, sx * k, sy * k);
@@ -358,6 +377,7 @@ export class Engine {
     gl.disable(gl.BLEND); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
 
     for (const layer of this.layers()) {
+      if (this.hideLayers?.has(layer.id)) continue;                                          // calque masqué sur cette sortie : pas dessiné (son état de lecture continue)
       const rt = this.rt[layer.id];
       if (!rt || (!rt.cur && !rt.prev)) continue;                                            // calque vide : rien à dessiner (même avec « Fond noir »)
       const opaqueRect = layer.opaque && layer.zone ? this.zoneRect(layer, null) : null;   // la zone cache ce qui est derrière, tant qu'un clip y joue
@@ -416,7 +436,7 @@ export class Engine {
   /** Mire de réglage : grille + nom et cadre de chaque zone, dessinée à la place de la composition. */
   mireTex() {
     const { show } = this, m = this.mire, W = this.cw, H = this.ch;
-    const sig = W + 'x' + H + JSON.stringify(show.slices.map(z => [z.name, z.on, z.src, z.shape, z.poly, z.extra])) + show.comp.w;   // z.src inclut rot
+    const sig = W + 'x' + H + JSON.stringify(show.slices.map(z => [z.name, z.on, z.src, z.shape, z.poly, z.extra, z.quad])) + show.comp.w;   // z.src inclut rot
     if (sig === m.sig) return m.tex;
     m.sig = sig;
     const cv = m.cv, ctx = cv.getContext('2d'), k = W / show.comp.w;
@@ -438,10 +458,11 @@ export class Engine {
       if (!z.on) return;
       const x = z.src.x * k, y = z.src.y * k, w = z.src.w * k, h = z.src.h * k, c = cols[i % cols.length];
       ctx.save();
-      if (z.src.rot) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(z.src.rot * Math.PI / 180); ctx.translate(-(x + w / 2), -(y + h / 2)); }
+      const zq = zoneQuad(z);
+      if (z.src.rot && !zq) { ctx.translate(x + w / 2, y + h / 2); ctx.rotate(z.src.rot * Math.PI / 180); ctx.translate(-(x + w / 2), -(y + h / 2)); }
       for (const g of shapeGroups(z)) {
         ctx.beginPath();
-        g.forEach(([u, v], j) => ctx[j ? 'lineTo' : 'moveTo'](x + u * w, y + v * h));
+        g.forEach(([u, v], j) => { const pt = zq ? zonePoint(z, u, v).map(t => t * k) : [x + u * w, y + v * h]; ctx[j ? 'lineTo' : 'moveTo'](pt[0], pt[1]); });
         ctx.closePath();
         ctx.globalAlpha = 0.16; ctx.fillStyle = c; ctx.fill(); ctx.globalAlpha = 1;
         ctx.strokeStyle = c; ctx.lineWidth = Math.max(2, 6 * k); ctx.stroke();
@@ -484,7 +505,7 @@ export class Engine {
       gl.uniform4f(u.u_src, z.src.x / comp.w, z.src.y / comp.h, z.src.w / comp.w, z.src.h / comp.h);
       gl.uniform2f(u.u_res, comp.w, comp.h); gl.uniform1f(u.u_rot, (+z.src.rot || 0) * Math.PI / 180);
       gl.uniform1i(u.u_shape, z.shape === 'libre' ? (mask ? 6 : 0) : (SHAPE_INDEX[z.shape] || 0));
-      this.bindMask(u, mask);
+      this.bindMask(u, mask); this.srcQuad(u, z);
       this.quad();
       gl.disable(gl.SCISSOR_TEST); return;
     }
@@ -508,7 +529,7 @@ export class Engine {
         gl.uniform2f(u.u_res, comp.w, comp.h); gl.uniform1f(u.u_rot, (+z.src.rot || 0) * Math.PI / 180);
         const mask = this.maskTex(z);
         gl.uniform1i(u.u_shape, z.shape === 'libre' ? (mask ? 6 : 0) : (SHAPE_INDEX[z.shape] || 0));
-        this.bindMask(u, mask);
+        this.bindMask(u, mask); this.srcQuad(u, z);
         this.quad();
       }
     }

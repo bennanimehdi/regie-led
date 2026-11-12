@@ -3,7 +3,7 @@
  * À droite la sortie HDMI. Par défaut elle est verrouillée : elle reproduit la composition telle quelle.
  * Avec « Sortie personnalisée » (show.customOut), on y pose chaque zone à la position et à la taille attendues par le
  * processeur LED — rectangle, rotation, miroir, ou 4 coins libres. Toutes les valeurs sont en pixels. */
-import { clamp, newSlice, quadBounds, uid, shapeOptions, shapeGroups, squareToQuad, applyH } from './model.js';
+import { clamp, newSlice, quadBounds, uid, shapeOptions, shapeGroups, squareToQuad, applyH, zoneQuad, zonePoint } from './model.js';
 
 const COLORS = ['#ffb300', '#00c2ff', '#ff4d6d', '#5ad65a', '#c77dff', '#ff8c42', '#f5f5f5'];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -17,6 +17,7 @@ export function initMapping(ctx) {
   /** Emplacement « naturel » d'une zone sur la sortie : le même que dans la composition. */
   function aligned(z) {
     const s = show(), kx = s.output.w / s.comp.w, ky = s.output.h / s.comp.h;
+    if (zoneQuad(z)) return z.quad.map(([x, y]) => [Math.round(x * kx), Math.round(y * ky)]);
     const x0 = Math.round(z.src.x * kx), y0 = Math.round(z.src.y * ky), x1 = Math.round((z.src.x + z.src.w) * kx), y1 = Math.round((z.src.y + z.src.h) * ky);
     return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
   }
@@ -72,9 +73,13 @@ export function initMapping(ctx) {
         <label class="f"><span>Forme de l'écran</span><select data-f="shape">${shapeOptions(z).map(([v, t]) => `<option value="${v}"${(z.shape || 'rect') === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
         <p class="note">La forme masque ce qui dépasse de l'écran (cercle, losange en escalier, triangle…) et se voit dans la mire. Pour un écran carré simplement <b>tourné</b>, garde « Rectangle » et règle la rotation ci-dessous.</p>
         <h4>Dans la composition (px)</h4>
-        <div class="quad4">${n('src.x', 'X', z.src.x)}${n('src.y', 'Y', z.src.y)}${n('src.w', 'Largeur', z.src.w)}${n('src.h', 'Hauteur', z.src.h)}</div>
+        ${zoneQuad(z) ? `<div class="quad4 two">${['Haut gauche', 'Haut droit', 'Bas droit', 'Bas gauche'].map((lab, i) => `<label><span>${lab}</span><span class="pair"><input type="number" data-f="q.${i}.0" value="${Math.round(z.quad[i][0])}"><input type="number" data-f="q.${i}.1" value="${Math.round(z.quad[i][1])}"></span></label>`).join('')}</div>
+        <div class="row"><button class="btn sm on" data-act="quad" title="Revenir à un rectangle (sa boîte englobante)">⬚ Coins libres</button></div>
+        <p class="note">Coins libres : tire chaque coin (rond doré) dans la composition pour épouser un écran en biais ou en trapèze ; l'image de cette zone se déforme avec, et la sortie suit.</p>`
+        : `<div class="quad4">${n('src.x', 'X', z.src.x)}${n('src.y', 'Y', z.src.y)}${n('src.w', 'Largeur', z.src.w)}${n('src.h', 'Hauteur', z.src.h)}</div>
         <div class="row rotrow"><label>Rotation de la découpe <input type="number" data-f="src.rot" step="1" value="${Math.round(z.src.rot || 0)}"> °</label>
           ${[0, 45, -45, 90].map(r => `<button class="btn sm${Math.round(z.src.rot || 0) === r ? ' on' : ''}" data-rot="${r}">${r}°</button>`).join('')}</div>
+        <div class="row"><button class="btn sm" data-act="quad" title="Chaque coin se déplace seul : écran en biais, trapèze, perspective">⬚ Coins libres</button></div>`}
         <p class="note">${s.customOut ? 'Écran monté en losange : découpe un carré, tourne-le de 45° (ou −45° si la mire apparaît penchée dans l\'autre sens) et pose-le droit sur la sortie.' : 'La rotation penche le contenu de cette zone dans l\'image.'}</p>
         <details><summary>Taille exacte depuis le pitch LED</summary>
           <div class="quad4"><label><span>Pitch (mm)</span><input type="number" data-pitch step="0.01" min="0.5" max="40" value="${z.pitch || 3.9}" list="pitches"></label><label><span>Largeur (m)</span><input type="number" data-pw step="0.01" min="0.1" value="${z.pw || ''}" placeholder="ex. 5"></label><label><span>Hauteur (m)</span><input type="number" data-ph step="0.01" min="0.1" value="${z.ph || ''}" placeholder="ex. 3"></label><label><span>&nbsp;</span><button class="btn sm gold" data-act="pitch">Appliquer</button></label></div>
@@ -111,10 +116,14 @@ export function initMapping(ctx) {
     let a = '', b = '';
     s.slices.forEach((z, i) => {
       const c = COLORS[i % COLORS.length], on = z.id === selId, cls = `z${on ? ' sel' : ''}${z.on ? '' : ' off'}${ctx.multi?.(z.id) ? ' multi' : ''}`;
-      const tr = z.src.rot ? ` transform="rotate(${z.src.rot} ${z.src.x + z.src.w / 2} ${z.src.y + z.src.h / 2})"` : '';
+      const zq = zoneQuad(z);
+      const tr = z.src.rot && !zq ? ` transform="rotate(${z.src.rot} ${z.src.x + z.src.w / 2} ${z.src.y + z.src.h / 2})"` : '';
       const shps = z.shape && z.shape !== 'rect' && z.shape !== 'carre' ? shapeGroups(z) : null;
-      a += `<g${tr}><rect class="${cls}" data-id="${z.id}" x="${z.src.x}" y="${z.src.y}" width="${z.src.w}" height="${z.src.h}" stroke="${c}" fill="${c}"/>
-        ${shps ? shps.map(shp => `<polygon class="zs" points="${shp.map(([u, v]) => (z.src.x + u * z.src.w) + ',' + (z.src.y + v * z.src.h)).join(' ')}" stroke="${c}"/>`).join('') : ''}
+      a += zq ? `<g><polygon class="${cls}" data-id="${z.id}" points="${zq.map(p => p.join(',')).join(' ')}" stroke="${c}" fill="${c}"/>
+        ${shps ? shps.map(shp => `<polygon class="zs" points="${shp.map(([u, v]) => zonePoint(z, u, v).map(Math.round).join(',')).join(' ')}" stroke="${c}"/>`).join('') : ''}`
+        : `<g${tr}><rect class="${cls}" data-id="${z.id}" x="${z.src.x}" y="${z.src.y}" width="${z.src.w}" height="${z.src.h}" stroke="${c}" fill="${c}"/>
+        ${shps ? shps.map(shp => `<polygon class="zs" points="${shp.map(([u, v]) => (z.src.x + u * z.src.w) + ',' + (z.src.y + v * z.src.h)).join(' ')}" stroke="${c}"/>`).join('') : ''}`;
+      a += `
         <text class="zl" x="${z.src.x + 8 * ui}" y="${z.src.y + 20 * ui}" font-size="${14 * ui}" fill="${c}">${i + 1} · ${esc(z.name)}</text>`;
       const custom = !!s.customOut, dst = custom ? z.dst : aligned(z);
       const bb = quadBounds(dst);
@@ -123,7 +132,8 @@ export function initMapping(ctx) {
       b += `<g${trO}><polygon class="${cls}${custom ? '' : ' ro'}"${custom ? ` data-id="${z.id}"` : ''} points="${dst.map(p => p.join(',')).join(' ')}" stroke="${c}" fill="${c}"/>
         ${shps ? shps.map(shp => `<polygon class="zs" points="${shp.map(([u, v]) => applyH(Hq, u, v).slice(0, 2).map(Math.round).join(',')).join(' ')}" stroke="${c}"/>`).join('') : ''}
         <text class="zl" x="${bb.x + 8 * uo}" y="${bb.y + 20 * uo}" font-size="${14 * uo}" fill="${c}">${i + 1} · ${esc(z.name)}</text></g>`;
-      if (on) {
+      if (on && zq) zq.forEach((p, k) => { a += `<circle class="zo-v" data-id="${z.id}" data-q="${k}" cx="${p[0]}" cy="${p[1]}" r="${7 * ui}"><title>Tirer ce coin</title></circle>`; });
+      else if (on) {
         const sc = [[z.src.x, z.src.y], [z.src.x + z.src.w, z.src.y], [z.src.x + z.src.w, z.src.y + z.src.h], [z.src.x, z.src.y + z.src.h]];
         sc.forEach((p, h) => { a += `<circle class="hd" data-id="${z.id}" data-h="${h}" cx="${p[0]}" cy="${p[1]}" r="${7 * ui}"/>`; });
         const mx = z.src.x + z.src.w / 2;
@@ -152,6 +162,7 @@ export function initMapping(ctx) {
   function setField(z, k, v) {
     if (k === 'name') { z.name = String(v); return; }
     if (k === 'shape') { z.shape = String(v); if (v === 'carre') ctx.squarify?.(z); return; }
+    if (k.startsWith('q.') && zoneQuad(z)) { const [, i, j] = k.split('.'), nv = Math.round(+v); if (isFinite(nv)) { z.quad[+i][+j] = nv; ctx.syncQuad(z); } return; }
     v = Math.round(+v);
     if (!isFinite(v)) return;
     const [a, b, c] = k.split('.');
@@ -187,6 +198,7 @@ export function initMapping(ctx) {
     const was = selId; selId = el.dataset.id;
     const z = cur();
     drag = { pane, st, d, h: el.dataset.h != null ? +el.dataset.h : null, start: point(e, st, d), src: { ...z.src }, dst: z.dst.map(p => [...p]), rot: el.dataset.r != null };
+    if (pane === 'in' && zoneQuad(z)) { drag.quad = z.quad.map(p => [...p]); drag.qk = el.dataset.q != null ? +el.dataset.q : null; }
     if (pane === 'in' && (el.dataset.v != null || el.dataset.m != null)) {                 // sommet d'une forme dessinée
       const pg = +el.dataset.pg;
       if (el.dataset.v != null && e.altKey) { drag = null; if (ctx.deleteVertex(z, pg, +el.dataset.v)) changed(); return; }
@@ -202,7 +214,12 @@ export function initMapping(ctx) {
     const [px, py] = point(e, drag.st, drag.d), dx = Math.round(px - drag.start[0]), dy = Math.round(py - drag.start[1]);
     if (drag.pane === 'in') {
       const o = drag.src;
-      if (drag.vert) { ctx.setVertex(z, drag.vert.pg, drag.vert.v, [px, py]); }
+      if (drag.quad) {                                       // coins libres : un coin seul, ou toute la forme
+        if (drag.qk != null) ctx.quadCorner(z, drag.quad, drag.qk, drag.quad[drag.qk][0] + dx, drag.quad[drag.qk][1] + dy);
+        else ctx.quadMove(z, drag.quad, o, dx, dy);
+        ctx.afterEdit?.();
+      }
+      else if (drag.vert) { ctx.setVertex(z, drag.vert.pg, drag.vert.v, [px, py]); }
       else if (drag.rot) {                                   // poignée de rotation : angle entre le centre et la souris
         let a = Math.atan2(py - (o.y + o.h / 2), px - (o.x + o.w / 2)) * 180 / Math.PI + 90;
         a = ((a + 540) % 360) - 180;
@@ -210,13 +227,17 @@ export function initMapping(ctx) {
         z.src.rot = Math.round(a);
         const f = root.querySelector('[data-shapebar] [data-zf="rot"]'); if (f) f.value = z.src.rot;
       }
-      else if (drag.h == null) { z.src = { ...o, x: o.x + dx, y: o.y + dy }; clampSrc(z); }
+      else if (drag.h == null) {                              // déplacement : l'aimant cale les bords et le centre (case « Aimant »)
+        const [x, y] = ctx.snapMove ? ctx.snapMove(z, o.w, o.h, o.x + dx, o.y + dy) : [o.x + dx, o.y + dy];
+        z.src = { ...o, x, y }; clampSrc(z);
+      }
       else {
         const { comp } = show(), r = -(o.rot || 0) * Math.PI / 180, cr = Math.cos(r), sr = Math.sin(r);
         const lx = Math.round(cr * dx - sr * dy), ly = Math.round(sr * dx + cr * dy);     // déplacement vu dans le repère de la zone
         let x0 = o.x, y0 = o.y, x1 = o.x + o.w, y1 = o.y + o.h;
         if (drag.h === 0 || drag.h === 3) x0 = clamp(x0 + lx, 0, x1 - 1); else x1 = clamp(x1 + lx, x0 + 1, comp.w);
         if (drag.h === 0 || drag.h === 1) y0 = clamp(y0 + ly, 0, y1 - 1); else y1 = clamp(y1 + ly, y0 + 1, comp.h);
+        if (ctx.snapEdges) [x0, y0, x1, y1] = ctx.snapEdges(z, drag.h, x0, y0, x1, y1);
         if (z.shape === 'carre') {                     // carré : un seul côté, ancré au coin opposé
           let side = Math.max(1, Math.abs(lx) >= Math.abs(ly) ? x1 - x0 : y1 - y0);
           const ax = drag.h === 0 || drag.h === 3 ? x1 : x0, ay = drag.h === 0 || drag.h === 1 ? y1 : y0;
@@ -227,7 +248,7 @@ export function initMapping(ctx) {
         z.src = { ...o, x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
       }
     } else if (!show().customOut) return;
-    else if (drag.h == null) z.dst = drag.dst.map(([x, y]) => [x + dx, y + dy]);
+    else if (drag.h == null) { const [sx, sy] = outSnap(z, drag.dst, dx, dy); z.dst = drag.dst.map(([x, y]) => [x + dx + sx, y + dy + sy]); }
     else if (free || e.altKey) { z.dst = drag.dst.map(p => [...p]); z.dst[drag.h] = [drag.dst[drag.h][0] + dx, drag.dst[drag.h][1] + dy]; }
     else {
       const ob = quadBounds(drag.dst), p = drag.dst[drag.h];
@@ -241,8 +262,17 @@ export function initMapping(ctx) {
     overlays(); syncFields(z); ctx.commit();
     if (drag.pane === 'in') { const f = root.querySelector('[data-shapebar] [data-zf="rot"]'); if (f) f.value = Math.round(z.src.rot || 0); }
   }
+  /** Aimant sur la sortie (zones placées à la main) : bords et centre de la zone calés sur ceux du signal et des autres zones. */
+  function outSnap(z, quad, dx, dy) {
+    if (!ctx.snapOn?.()) return [0, 0];
+    const s = show(), tol = s.output.w / 110, b = quadBounds(quad);
+    const cx = [0, s.output.w / 2, s.output.w], cy = [0, s.output.h / 2, s.output.h];
+    for (const o of s.slices) if (o !== z && o.on) { const ob = quadBounds(o.dst); cx.push(ob.x, ob.x + ob.w / 2, ob.x + ob.w); cy.push(ob.y, ob.y + ob.h / 2, ob.y + ob.h); }
+    const best = (v0, size, c) => { let d = 0, bd = tol; for (const v of [v0, v0 + size / 2, v0 + size]) for (const t of c) { const dd = t - v; if (Math.abs(dd) < bd) { bd = Math.abs(dd); d = dd; } } return Math.round(d); };
+    return [best(b.x + dx, b.w, cx), best(b.y + dy, b.h, cy)];
+  }
   function syncFields(z) {
-    const b = quadBounds(z.dst), vals = { 'src.x': z.src.x, 'src.y': z.src.y, 'src.w': z.src.w, 'src.h': z.src.h, 'src.rot': z.src.rot || 0, 'dst.x': b.x, 'dst.y': b.y, 'dst.w': b.w, 'dst.h': b.h };
+    const b = quadBounds(z.dst), vals = { ...(zoneQuad(z) ? Object.fromEntries(z.quad.flatMap((p, i) => [[`q.${i}.0`, p[0]], [`q.${i}.1`, p[1]]])) : {}), 'src.x': z.src.x, 'src.y': z.src.y, 'src.w': z.src.w, 'src.h': z.src.h, 'src.rot': z.src.rot || 0, 'dst.x': b.x, 'dst.y': b.y, 'dst.w': b.w, 'dst.h': b.h };
     z.dst.forEach((p, i) => { vals[`p.${i}.0`] = p[0]; vals[`p.${i}.1`] = p[1]; });
     for (const el of root.querySelectorAll('#map-side [data-f]')) if (el.dataset.f in vals) el.value = Math.round(vals[el.dataset.f]);
   }
@@ -299,12 +329,13 @@ export function initMapping(ctx) {
         n.dst = n.dst.map(([x, y]) => [x + 20, y + 20]);
         s.slices.push(n); pick(n.id); return changed();
       }
-      if (act === 'full') { z.src = { x: 0, y: 0, w: s.comp.w, h: s.comp.h, rot: 0 }; z.dst = [[0, 0], [s.output.w, 0], [s.output.w, s.output.h], [0, s.output.h]]; z.custom = false; return changed(); }
+      if (act === 'quad') { ctx.toggleQuad(z); renderSide(); overlays(); return; }
+      if (act === 'full') { delete z.quad; z.src = { x: 0, y: 0, w: s.comp.w, h: s.comp.h, rot: 0 }; z.dst = [[0, 0], [s.output.w, 0], [s.output.w, s.output.h], [0, s.output.h]]; z.custom = false; return changed(); }
       if (act === 'pitch') {                                   // taille de la zone = dimensions physiques de l'écran ÷ pitch
         const pitch = +$('#map-side [data-pitch]')?.value, pw = +$('#map-side [data-pw]')?.value, ph = +$('#map-side [data-ph]')?.value;
         if (!(pitch > 0) || !(pw > 0) || !(ph > 0)) { ctx.toast('Indique le pitch (mm), la largeur et la hauteur (m) de l\'écran.', 'err'); return; }
         const w = Math.round(pw * 1000 / pitch), h = Math.round(ph * 1000 / pitch);
-        z.pitch = pitch; z.pw = pw; z.ph = ph;
+        z.pitch = pitch; z.pw = pw; z.ph = ph; delete z.quad;              // la taille exacte s'applique à un rectangle
         z.src.w = Math.max(1, Math.min(w, s.comp.w)); z.src.h = Math.max(1, Math.min(h, s.comp.h));
         z.src.x = Math.min(z.src.x, s.comp.w - z.src.w); z.src.y = Math.min(z.src.y, s.comp.h - z.src.h);
         if (!z.custom) z.dst = aligned(z);
@@ -351,7 +382,8 @@ export function initMapping(ctx) {
       if (!z || !d) return false;
       e.preventDefault();
       const k = e.shiftKey ? 10 : 1;
-      if (e.altKey || !show().customOut) { z.src.x += d[0] * k; z.src.y += d[1] * k; clampSrc(z); }
+      if ((e.altKey || !show().customOut) && zoneQuad(z)) ctx.quadMove(z, z.quad.map(p => [...p]), { ...z.src }, d[0] * k, d[1] * k, false);
+      else if (e.altKey || !show().customOut) { z.src.x += d[0] * k; z.src.y += d[1] * k; clampSrc(z); }
       else { z.dst = z.dst.map(([x, y]) => [x + d[0] * k, y + d[1] * k]); z.custom = true; }
       overlays(); syncFields(z); ctx.commit();
       return true;

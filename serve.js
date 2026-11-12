@@ -34,6 +34,16 @@ const send = (res, code, body, type = 'application/json; charset=utf-8') => {
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 };
 
+/** Erreur d'écriture sur le disque, expliquée. Sous Windows, « ENOENT » ou « EPERM » dans Documents vient presque toujours de la
+ *  « Protection contre les ransomwares » (accès contrôlé aux dossiers) qui bloque les applications inconnues. */
+function fsMessage(e, dir) {
+  const code = e?.code || '';
+  if (process.platform === 'win32' && /ENOENT|EPERM|EACCES/.test(code)) return `Windows empêche la régie d'écrire dans « ${dir} ». Ouvre Sécurité Windows → Protection contre les virus et menaces → Protection contre les ransomwares → « Autoriser une application » et ajoute Régie LED (ou désactive l'accès contrôlé aux dossiers), puis relance la régie. (${code})`;
+  if (/ENOSPC/.test(code)) return 'Le disque est plein : libère de la place puis réessaie.';
+  if (/EACCES|EPERM/.test(code)) return `Écriture refusée dans « ${dir} » : vérifie les autorisations de ce dossier. (${code})`;
+  return String(e?.message || e);
+}
+
 /** Nom de fichier sûr : jamais de chemin, jamais de fichier caché. */
 function safeName(raw) {
   const n = path.basename(String(raw || '').normalize('NFC')).replace(/[\u0000-\u001f\\/:*?"<>|]/g, '_').trim();
@@ -141,7 +151,6 @@ export function startServer(opts = {}) {
   async function importDoc(req, rawName, maxSide) {
     const ext = path.extname(String(rawName || '')).toLowerCase(), kind = DOCS[ext];
     if (!kind) throw Object.assign(new Error('Type de document non pris en charge (PDF, PowerPoint, Word, Excel).'), { code: 400 });
-    if (process.platform === 'win32' && kind !== 'powerpoint') throw Object.assign(new Error('Sur Windows, seuls les PowerPoint peuvent être importés en images : exporte ce document en PDF puis en images, ou importe-le depuis un Mac.'), { code: 400 });
     if (process.platform !== 'darwin' && process.platform !== 'win32') throw Object.assign(new Error('La conversion de documents n\'est disponible que sur Mac et Windows.'), { code: 400 });
     if (converting) throw Object.assign(new Error('Une conversion est déjà en cours : attends qu\'elle se termine.'), { code: 409 });
     converting = true;
@@ -156,6 +165,20 @@ export function startServer(opts = {}) {
         req.on('aborted', () => reject(new Error('envoi interrompu')));
       });
       let pdf = src;
+      if (process.platform === 'win32' && kind === 'pdf') return { pdfFile: src };     // PDF : la régie le lit elle-même (pdf.js)
+      if (process.platform === 'win32' && kind !== 'powerpoint') {          // Word / Excel : Office l'exporte en PDF, la régie le lit (pdf.js)
+        pdf = path.join(WORK, id + '.pdf');
+        const app = APP_NAME[kind];
+        try { await runPs('office2pdf.ps1', [kind, src, pdf], 250000); }
+        catch (e) {
+          if (/80040154|introuvable|Class not registered/i.test(e.stderr)) throw new Error(`${app} est introuvable sur cet ordinateur : installe Microsoft ${app}, ou exporte le fichier en PDF puis importe le PDF.`);
+          if (e.killed) throw new Error(`${app} n'a pas répondu à temps : une fenêtre y attend peut-être une réponse. Regarde dans ${app}, puis réessaie.`);
+          throw new Error(`${app} n'a pas pu convertir ce fichier. Exporte-le en PDF depuis ${app}, puis importe le PDF. (${String(e.stderr || '').trim().split('\n').pop().slice(0, 160)})`);
+        }
+        const st = await fsp.stat(pdf).catch(() => null);
+        if (!st || !st.size) throw new Error(`${app} n'a produit aucune page. Exporte le fichier en PDF, puis importe le PDF.`);
+        return { pdfFile: pdf };
+      }
       if (process.platform === 'win32') {                                   // PowerPoint exporte lui-même chaque diapositive en JPEG
         try { await runPs('pptexport.ps1', [src, path.join(WORK, 'p-'), String(maxSide), '200', 'JPG'], 250000); }
         catch (e) {
@@ -193,8 +216,34 @@ export function startServer(opts = {}) {
       return meta;
     } finally {
       converting = false;
-      fsp.rm(WORK, { recursive: true, force: true }).catch(() => {});
+      if (!keepWork) fsp.rm(WORK, { recursive: true, force: true }).catch(() => {});
+      keepWork = false;
     }
+  }
+  let keepWork = false;                                       // le PDF produit est encore à envoyer à la régie
+
+  /* Pages d'un document rendues par la régie elle-même (pdf.js) : envoyées une par une, puis rangées comme un document converti. */
+  const pageTok = t => (/^[a-z0-9]{6,24}$/.test(String(t || '')) ? String(t) : null);
+  async function saveDocPage(req, tok, i) {
+    const dir = path.join(DATA, 'pages-' + tok);
+    await fsp.mkdir(dir, { recursive: true });
+    const buf = await readBody(req, 25 * 1024 * 1024);
+    if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) throw Object.assign(new Error('Page illisible (JPEG attendu).'), { code: 400 });
+    await fsp.writeFile(path.join(dir, 'p-' + String(i).padStart(3, '0') + '.jpg'), buf);
+  }
+  async function finishDocPages(tok, rawName) {
+    const tmp = path.join(DATA, 'pages-' + tok);
+    const pages = (await fsp.readdir(tmp).catch(() => [])).filter(n => /^p-\d+\.jpg$/.test(n)).sort();
+    if (!pages.length) throw Object.assign(new Error('Aucune page reçue.'), { code: 400 });
+    const base = (path.basename(String(rawName).normalize('NFC'), path.extname(String(rawName))).replace(/[\u0000-\u001f\\/:*?"<>|]/g, '_').trim() || 'Document').slice(0, 60);
+    const dir = path.join(DOCD, base);
+    await fsp.rm(dir, { recursive: true, force: true });
+    await fsp.mkdir(dir, { recursive: true });
+    for (const [i, p] of pages.entries()) await fsp.rename(path.join(tmp, p), path.join(dir, String(i + 1).padStart(3, '0') + '.jpg'));
+    await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    const meta = { id: base, name: String(rawName), pages: pages.length, at: Date.now() };
+    await fsp.writeFile(path.join(dir, 'meta.json'), JSON.stringify(meta));
+    return meta;
   }
 
   /** Pilote le diaporama PowerPoint en direct. Renvoie {pos, total, cropT, cropB} : position + rognage de la fenêtre capturée.
@@ -276,12 +325,15 @@ export function startServer(opts = {}) {
           if (!name) return send(res, 400, { error: 'Type de fichier non pris en charge (vidéo mp4/mov/webm ou image).' });
           const final = await uniqueName(name);
           const tmp = path.join(MEDIA, '.envoi-' + Date.now() + '-' + Math.random().toString(36).slice(2));
-          await new Promise((resolve, reject) => {
-            const ws = fs.createWriteStream(tmp);
-            req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject);
-            req.on('aborted', () => reject(new Error('envoi interrompu')));
-          }).catch(async e => { await fsp.rm(tmp, { force: true }); throw e; });
-          await fsp.rename(tmp, path.join(MEDIA, final));
+          try {
+            await fsp.mkdir(MEDIA, { recursive: true });              // dossier supprimé ou déplacé entre-temps : on le recrée
+            await new Promise((resolve, reject) => {
+              const ws = fs.createWriteStream(tmp);
+              req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject);
+              req.on('aborted', () => reject(new Error('envoi interrompu')));
+            });
+            await fsp.rename(tmp, path.join(MEDIA, final));
+          } catch (e) { req.resume(); await fsp.rm(tmp, { force: true }).catch(() => {}); return send(res, 500, { error: fsMessage(e, MEDIA) }); }
           return send(res, 200, { ok: true, name: final, url: '/media/' + encodeURIComponent(final) });
         }
         if (req.method === 'DELETE') {
@@ -326,8 +378,28 @@ export function startServer(opts = {}) {
       if (p === '/api/import-doc' && req.method === 'POST') {
         const max = Math.max(1280, Math.min(3840, +url.searchParams.get('max') || 1920));
         try {
-          return send(res, 200, { ok: true, ...(await importDoc(req, url.searchParams.get('name'), max)) });
-        } catch (e) { req.resume(); return send(res, e.code || 500, { error: String(e.message || e) }); }
+          keepWork = true;
+          const r = await importDoc(req, url.searchParams.get('name'), max);
+          if (r.pdfFile) {                                          // la régie fera les images elle-même : on lui renvoie le PDF
+            const buf = await fsp.readFile(r.pdfFile);
+            fsp.rm(WORK, { recursive: true, force: true }).catch(() => {});
+            return send(res, 200, buf, 'application/pdf');
+          }
+          fsp.rm(WORK, { recursive: true, force: true }).catch(() => {});
+          return send(res, 200, { ok: true, ...r });
+        } catch (e) { keepWork = false; req.resume(); return send(res, e.code || 500, { error: String(e.message || e) }); }
+      }
+      if (p === '/api/doc-page' && req.method === 'POST') {            // une page rendue par la régie (pdf.js)
+        const tok = pageTok(url.searchParams.get('tok')), i = Math.round(+url.searchParams.get('i'));
+        if (!tok || !(i >= 1 && i <= 999)) { req.resume(); return send(res, 400, { error: 'Page invalide' }); }
+        try { await saveDocPage(req, tok, i); return send(res, 200, { ok: true }); }
+        catch (e) { req.resume(); return send(res, e.code || 500, { error: fsMessage(e, DATA) }); }
+      }
+      if (p === '/api/doc-done' && req.method === 'POST') {            // toutes les pages sont arrivées : on range le document
+        const tok = pageTok(url.searchParams.get('tok'));
+        if (!tok) return send(res, 400, { error: 'Document invalide' });
+        try { return send(res, 200, { ok: true, ...(await finishDocPages(tok, url.searchParams.get('name') || 'Document')) }); }
+        catch (e) { return send(res, e.code || 500, { error: fsMessage(e, DATA) }); }
       }
 
       if (p === '/api/ppt/open' && req.method === 'POST') {          // envoi du fichier + lancement du diaporama en fenêtre
