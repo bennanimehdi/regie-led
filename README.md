@@ -204,6 +204,12 @@ Dans les réglages d'un clip en cours (compte à rebours, bandeau défilant, vid
 régie et sur le mur : `pausedAt` dans l'état de lecture, l'heure de lancement est décalée à la reprise) ; la case affiche ⏸. L'horloge
 continue toujours. Actions de raccourci « Pause / reprise du clip sélectionné » et « Recommencer le clip sélectionné ».
 
+## Éteindre un clip depuis sa case
+
+Sur un clip en cours (à la sortie ou préparé), le survol montre un petit **■** à côté du stylo et du ✕ : il éteint ce clip
+(fondu vers le vide) sans passer par le carré du calque. En mode Préparation, il le retire de la préparation (il quitte l'écran
+au prochain « Envoyer ») ; s'il n'est qu'à la sortie, ou avec **Maj+clic**, il est coupé directement à la sortie.
+
 ## Vidéo : aperçu, point de début / fin, saut de position
 
 Dans les réglages d'un clip vidéo, **« Aperçu et découpe »** : un petit lecteur muet (il ne touche pas au mur). On avance dedans et on
@@ -219,6 +225,8 @@ L'onglet **Outputs** (à côté de Réglages) montre une vignette vivante par so
 et chaque autre sortie (retours, autres salles), telle qu'elle est envoyée sur son écran, calques masqués compris. Sur chaque
 carte : le nom, l'état de la fenêtre (fermée, résolution, i/s), « Ouvrir / Rouvrir », ce qu'elle montre (toute la composition ou
 une zone en plein cadre) et les calques visibles (pastilles vertes = visibles, clic pour masquer). « ＋ Sortie » en ajoute une.
+Le **✕** rouge de chaque carte (sauf la MASTER) supprime la sortie, après confirmation : sa fenêtre se ferme d'elle-même
+(message `close` sur le canal de la régie) et l'écran qui lui était réservé est oublié.
 
 Chaque carte (et chaque sortie dans Réglages) a aussi son **écran** : dans l'application de bureau, la liste des écrans branchés
 (« Automatique », un écran précis ou « Fenêtre simple ») ; une sortie déjà ouverte y est déplacée tout de suite, et le choix est
@@ -308,15 +316,35 @@ une fois. Pour garder Documents : autoriser Régie LED dans la protection contre
 (« Médiathèque » à gauche, « Conducteur » à droite) qui les rouvre d'un clic. Mémorisé ; raccourci « Masquer / afficher les panneaux
 latéraux ». Une scène peut avoir jusqu'à **20 calques**.
 
+## Indicateur Santé
+
+Pastille **« Santé »** dans la barre du haut : verte (fluide), orange (à surveiller), rouge clignotante (risque de coupure, avec un
+message). Chaque fenêtre de sortie mesure chaque seconde ses images par seconde, ses **saccades** (images affichées en retard), les
+**images de vidéo perdues** par le décodeur, le nombre de vidéos en cours et celles plus grandes que du 1080p ; l'application de
+bureau ajoute processeur, mémoire totale et chaleur (Mac). Un clic ouvre le détail par sortie (avec la courbe des images/s) et un
+**journal** horodaté des changements d'état. Seuils : images/s < 85 % (orange) ou < 60 % (rouge) de la fréquence habituelle de l'écran,
+2 / 6 saccades par seconde, 2 / 10 images de vidéo perdues par seconde, mémoire > 3,5 / 6 Go, chaleur « élevée » / « critique ».
+
+## Vidéos lourdes (4K) : aperçus allégés, relance automatique
+
+- Dans les **aperçus de la régie** (Préparation, Sortie, Outputs), une vidéo bien plus grande que l'aperçu (4K…) est réduite avant
+  d'être envoyée à la carte graphique. La **fenêtre de sortie garde toujours la pleine résolution**. Sans cela, une 4K était
+  envoyée en entier jusqu'à trois fois à chaque image, ce qui peut saturer un PC portable (vidéo figée à la sortie).
+- Dans la **fenêtre de sortie**, une vidéo qui devrait jouer mais reste en pause est relancée (au plus toutes les 1,5 s), et une
+  image figée depuis 2,5 s est décoincée (petit saut de 0,04 s + relance). Chaque relance est notée dans le journal.
+- Le **journal** (Aide → Ouvrir le dossier des journaux → `main.log`) note aussi la carte graphique au démarrage (décodage vidéo
+  matériel ou non), un plantage du processus graphique et une fenêtre de sortie qui ne répond plus.
+
 ## Espace disque : pas de doublon, nettoyage
 
 - **Import sans doublon** : à l'envoi d'un fichier, la régie calcule son empreinte (SHA-256). Si un fichier au contenu identique est
   déjà dans `media` (même sous un autre nom), il est réutilisé et rien n'est copié.
 - **Réglages → Espace disque** : taille du dossier (médias, documents, PowerPoint), **« Supprimer les doublons »** (un seul fichier
   gardé par contenu ; les anciens noms continuent de marcher pour tous les shows grâce à des alias), et **« Mettre à la corbeille »**
-  les fichiers inutilisés depuis 7 / 30 / 60 / 90 / 180 jours. « Utilisé » = dans le show en cours ou dans un show ouvert pendant cette
+  les fichiers inutilisés depuis **le nombre de jours de ton choix** (1 à 3650, tapé dans le champ ; 7, 15, 30, 60, 90, 180, 365 proposés). « Utilisé » = dans le show en cours ou dans un show ouvert pendant cette
   période (chaque enregistrement d'un show met à jour la date de ses fichiers, `data/fichiers.json`).
-- **Nettoyage automatique** (désactivé par défaut) : au démarrage, mise à la corbeille des fichiers inutilisés depuis N jours.
+- **Nettoyage automatique** (case décochée par défaut) : au démarrage, mise à la corbeille des fichiers inutilisés depuis N jours,
+  N libre lui aussi (1 à 3650). Décocher garde le nombre pour la prochaine fois.
 - Les fichiers enlevés vont dans la **corbeille de l'ordinateur** (application de bureau) ou dans `data/corbeille` (navigateur) :
   récupérables.
 
@@ -409,6 +437,6 @@ La régie et la sortie se parlent par `BroadcastChannel` : elles doivent tourner
 
 ## Limites connues
 
-- Pas encore testé sur un vrai processeur LED ni avec de longues vidéos 4K.
+- Pas encore testé sur un vrai processeur LED. Vidéo 4K figée signalée sur un PC Windows (2026-11-12) : correctifs ci-dessus, à revalider.
 - ProRes, HAP et les vidéos avec couche alpha ne sont pas lus par le navigateur.
 - Pas de masques arrondis ni de fondu de bord entre zones ; pas de NDI / Syphon / DMX / MIDI.

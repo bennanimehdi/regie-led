@@ -2,7 +2,7 @@
  * Au lancement : démarre le serveur local de serve.js sur un port libre, ouvre la régie dans une fenêtre, et quand la régie
  * appelle window.open('output.html'), ouvre la sortie en plein écran sur l'écran LED (premier écran externe, ou celui choisi
  * dans le menu Sortie). Les shows et les médias de l'application installée vivent dans « Documents/Régie LED ». */
-import { app, BrowserWindow, screen, session, desktopCapturer, shell, ipcMain, Menu, dialog, nativeImage, Notification } from 'electron';
+import { app, BrowserWindow, screen, session, desktopCapturer, shell, ipcMain, Menu, dialog, nativeImage, Notification, powerMonitor } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -101,6 +101,8 @@ function onWindowCreated(win, { url }) {
   // Échap dans la sortie : on quitte le plein écran (la fenêtre reste, déplaçable) ; Cmd/Ctrl+Maj+W la ferme (menu Sortie).
   win.webContents.on('before-input-event', (_e, input) => { if (input.type === 'keyDown' && input.key === 'Escape' && isFs(win)) setFs(win, false); });
   win.on('closed', () => { if (outputs.get(outId) === win) outputs.delete(outId); refreshMenu(); });
+  win.on('unresponsive', () => log.warn(`Sortie « ${outId} » : la fenêtre ne répond plus`));
+  win.on('responsive', () => log.info(`Sortie « ${outId} » : la fenêtre répond de nouveau`));
   log.info(`Sortie « ${outId} » ouverte (${win.getBounds().width}×${win.getBounds().height}${isFs(win) ? ', plein écran' : ''})`);
   refreshMenu();
 }
@@ -130,6 +132,13 @@ function setupPermissions() {
  * « Reprendre la capture » prévient d'abord (regie:prefer-capture) : la capture suivante prend directement la fenêtre voulue,
  * sans aucune fenêtre de choix (le sélecteur système de macOS s'afficherait aussi sur la TV des spectateurs). */
 let preferCap = null;
+/** Santé de l'ordinateur pour l'indicateur de la régie : processeur et mémoire de toute l'application, état thermique (Mac). */
+ipcMain.handle('regie:metrics', () => {
+  const m = app.getAppMetrics();
+  let thermal = 'unknown'; try { thermal = powerMonitor.getCurrentThermalState?.() || 'unknown'; } catch { /* pas sur ce système */ }
+  return { cpu: Math.round(m.reduce((a, x) => a + (x.cpu?.percentCPUUsage || 0), 0)), mem: Math.round(m.reduce((a, x) => a + (x.memory?.workingSetSize || 0), 0) / 1024),
+    gpu: Math.round((m.find(x => x.type === 'GPU')?.memory?.workingSetSize || 0) / 1024), thermal, cores: (globalThis.navigator?.hardwareConcurrency) || 0 };
+});
 ipcMain.handle('regie:prefer-capture', (_e, want) => { preferCap = { ...(want || {}), until: Date.now() + 20000 }; installCapture(false); return true; });
 function preferredSource(sources) {
   const p = preferCap; preferCap = null;
@@ -217,6 +226,7 @@ ipcMain.on('regie:restart-update', () => updater?.restart());
 app.on('second-instance', () => { if (regieWin) { if (regieWin.isMinimized()) regieWin.restore(); regieWin.focus(); } });
 app.on('window-all-closed', () => app.quit());
 
+app.on('child-process-gone', (_e, d) => log.error(`Processus ${d.type}${d.name ? ' (' + d.name + ')' : ''} arrêté : ${d.reason} (code ${d.exitCode})`));
 app.whenReady().then(async () => {
   fs.mkdirSync(mediaDir, { recursive: true }); fs.mkdirSync(dataDir, { recursive: true });
   // Port fixe : l'adresse de la régie ne change pas d'un lancement à l'autre, donc le navigateur garde ses réglages (sources
@@ -225,6 +235,7 @@ app.whenReady().then(async () => {
   try { srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 4410, trash }); }
   catch (e) { log.warn(`Port 4410 indisponible (${e.code || e.message}) : port libre au hasard, les réglages du navigateur ne seront pas conservés.`); srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0, trash }); }
   log.info(`Régie LED ${app.getVersion()} — serveur ${srv.url} — shows : ${dataDir} — médias : ${mediaDir}`);
+  try { const g = app.getGPUFeatureStatus(); log.info(`Carte graphique : décodage vidéo ${g.video_decode}, WebGL2 ${g.webgl2}, composition ${g.gpu_compositing}`); } catch { /* sans gravité */ }
   if (rootMoved && settings.rootWarned !== userRoot) {             // prévenu une fois : les fichiers ne sont pas dans Documents
     settings.rootWarned = userRoot; saveSettings();
     setTimeout(() => dialog.showMessageBox({ type: 'info', title: 'Régie LED', message: 'Shows et médias rangés dans « ' + userRoot + ' »',

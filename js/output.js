@@ -35,6 +35,7 @@ bc.onmessage = e => {
   if (m.t === 'state') apply(m);
   else if (m.t === 'audio') eng.audio = m.v;
   else if (m.t === 'reload') location.reload();          // la régie a un code plus récent que cette fenêtre
+  else if (m.t === 'close' && m.out === outId && !isMain) window.close();   // cette sortie vient d'être supprimée dans la régie
 };
 /** Clips « fenêtre en direct » actuellement à l'écran : ceux dont il faut la capture. */
 const liveScreens = () => (state ? Object.values(state.live.layers || {}).map(L => L.clipId).filter(id => state.show.clips[id]?.type === 'screen') : []);
@@ -66,8 +67,26 @@ setInterval(() => {
   if (meters.size && isMain) bc.postMessage({ t: 'levels', l, run: meterRunning() });
 }, 100);
 
+/* Santé de cette sortie, envoyée avec le statut chaque seconde :
+ *  late    = images affichées en retard (saccades : intervalle > 1,7 × l'intervalle habituel) pendant la dernière seconde,
+ *  maxMs   = pire intervalle entre deux images (ms), dropped = images de vidéo perdues par le décodeur pendant la seconde,
+ *  videos  = vidéos en cours de lecture, heavy = celles plus grandes que du 1080p, heap = mémoire JavaScript de la fenêtre (Mo). */
+const hl = { last: 0, d: [], dropped: 0 };
+function healthSample() {
+  const d = hl.d.splice(0), sorted = [...d].sort((a, b) => a - b), med = sorted[Math.floor(sorted.length / 2)] || 16.7;
+  let dropped = 0, videos = 0; const heavy = [];
+  for (const e of eng.sources.values()) {
+    const v = e.src.v; if (!v) continue;
+    dropped += v.getVideoPlaybackQuality?.().droppedVideoFrames || 0;
+    if (!v.paused && v.readyState >= 2) { videos++; if (v.videoWidth * v.videoHeight > 2200000) heavy.push(`${e.src.clip?.name || 'vidéo'} (${v.videoWidth}×${v.videoHeight})`); }
+  }
+  const dd = Math.max(0, dropped - hl.dropped); hl.dropped = dropped;
+  return { late: d.filter(x => x > Math.max(20, med * 1.7)).length, maxMs: Math.round(sorted.at(-1) || 0), frameMs: Math.round(med * 10) / 10,
+    dropped: dd, videos, heavy: heavy.slice(0, 4), heap: Math.round((performance.memory?.usedJSHeapSize || 0) / 1048576), hidden: document.visibilityState !== 'visible' };
+}
 function loop() {
   requestAnimationFrame(loop);
+  const tnow = performance.now(); if (hl.last) hl.d.push(tnow - hl.last); hl.last = tnow;
   if (!state) return;
   const c = eng.canvas, o = me();
   if (isMain) {
@@ -87,7 +106,7 @@ function loop() {
 requestAnimationFrame(loop);
 
 setInterval(() => bc.postMessage({
-  t: 'status', out: outId, w: Math.round(innerWidth * devicePixelRatio), h: Math.round(innerHeight * devicePixelRatio),
+  t: 'status', out: outId, w: Math.round(innerWidth * devicePixelRatio), h: Math.round(innerHeight * devicePixelRatio), health: healthSample(),
   fs: isFs(), fps: eng.fps, audioBlocked: !!eng.audioBlocked, cameraError: eng.cameraError || '',
   v: version, noCapture: missingCapture(), linked: !!window.opener,
   via: liveScreens().map(id => (directStream(id) ? 'direct' : window.__ledRemote?.[id] ? 'relais' : 'rien')).join(','), rtc: relay.states().join(' '),

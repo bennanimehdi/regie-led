@@ -13,4 +13,6 @@ contextBridge.exposeInMainWorld('regieDesktop', {
   /** Choisit l'écran d'une sortie ('auto', id d'écran ou 'window') ; une sortie ouverte y est déplacée tout de suite. */
   setOutputDisplay: (outId, v) => ipcRenderer.send('regie:set-output-display', outId, v),
   onDisplaysChanged: cb => ipcRenderer.on('regie:displays-changed', () => cb()),
+  /** Processeur (%), mémoire (Mo) de toute l'application et état thermique : { cpu, mem, gpu, thermal }. */
+  metrics: () => ipcRenderer.invoke('regie:metrics'),
 });

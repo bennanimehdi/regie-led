@@ -32,9 +32,10 @@
     <span>Général</span>
     <input id="master" type="range" min="0" max="1" step="0.01">
   </label>
-  <button id="audio-mute" class="btn big" title="Couper tout le son de sortie (vidéos, sources en direct), sans toucher à l'image">🔊 Son</button>
+  <button id="audio-mute" class="btn big" title="Couper tout le son de sortie (vidéos, sources en direct), sans toucher à l'image">🔊<span class="lbl"> Son</span></button>
   <button id="blackout" class="btn big" title="Écran noir (touche B)">Noir</button>
   <button id="open-out" class="btn big gold">Ouvrir la sortie</button>
+  <button class="health" id="health" title="Santé : fluidité des sorties, vidéos, mémoire (clic pour le détail)"><i></i><span class="lbl">Santé</span></button>
   <span class="out-status" id="out-status">Sortie fermée</span>
 </header>
 
@@ -73,6 +74,7 @@
   <button id="out-fix" class="btn sm gold">Mettre à jour la sortie</button>
 </div>
 <div id="toast" class="toast" hidden></div>
+<div id="health-panel" class="health-panel" hidden></div>
 <div id="lib-peek" class="lib-peek" hidden></div>
 <script type="module" src="js/app.js"></script>
 </body>

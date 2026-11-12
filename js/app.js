@@ -113,10 +113,30 @@ function launch(layerId, clipId, fade) {
   if (!prepOn) { commit(false); renderScenes(); }
   updatePlaying();
 }
+/** Lance un clip directement à la sortie, même en mode Préparation (raccourci « … directement à la sortie »).
+ *  Seul ce calque change : ce qui est préparé ailleurs reste en place ; l'écran Préparation montre ce calque comme le mur. */
+function launchDirect(layerId, clipId) {
+  if (!show.clips[clipId] || !layerById(layerId)) return;
+  claimLive();
+  const L = { clipId, t0: Date.now() };
+  live.layers[layerId] = L;
+  if (prepOn) prep.layers[layerId] = { ...L };
+  commit(false); renderScenes(); updatePlaying();
+}
 function eject(layerId, fade) {
   if (!stage()[layerId]?.clipId) return;
   stage()[layerId] = { clipId: null, t0: Date.now(), ...(fade != null ? { fade } : {}) };
   if (!prepOn) commit(false);
+  updatePlaying();
+}
+/** Petit carré ■ d'un clip : l'éteint là où il est, sans passer par le carré du calque.
+ *  Mode Préparation : retiré de la préparation (part au prochain « Envoyer ») ; s'il n'est qu'à la sortie, ou avec Maj, coupé directement à la sortie. */
+function stopClip(layerId, clipId, direct) {
+  const onLive = clipOn(live.layers, layerId) === clipId, onPrep = prepOn && clipOn(prep.layers, layerId) === clipId;
+  if (!onLive && !onPrep) return;
+  const now = Date.now();
+  if (onPrep) prep.layers[layerId] = { clipId: null, t0: now };
+  if (onLive && (!prepOn || direct || !onPrep)) { live.layers[layerId] = { clipId: null, t0: now }; commit(false); }
   updatePlaying();
 }
 /** L'aperçu repart de ce qui est à la sortie (les vidéos se calent à la même position). */
@@ -924,12 +944,14 @@ function addClipsToGrid(clips, layerIdx) {
 function addClipToGrid(clip, layerIdx) { addClipsToGrid([clip], layerIdx); }
 const thumbMedia = m => (m.type === 'image' ? `<img src="${esc(m.url)}" loading="lazy" draggable="false" alt="">` : `<video src="${esc(m.url)}#t=0.5" preload="metadata" muted playsinline></video>`);
 /** Ligne de médiathèque d'un document à pages : un seul élément, dont on tourne les pages. */
-const docItem = d => `<div class="lib-item" draggable="true" data-doc="${esc(d.id)}" title="Document à pages : glisse-moi sur une case ou une forme (ou double-clic)">
+const docItem = d => `<div class="lib-item${libSel.has('doc:' + d.id) ? ' sel' : ''}" draggable="true" data-doc="${esc(d.id)}" title="Document à pages : glisse-moi sur une case ou une forme (ou double-clic). Coche pour sélectionner plusieurs fichiers.">
+    <input type="checkbox" class="lib-ck" data-ck="${esc('doc:' + d.id)}"${libSel.has('doc:' + d.id) ? ' checked' : ''} title="Sélectionner">
     <div class="lib-th doc"><img src="${esc(docPageUrl(d.id, 0))}" loading="lazy" draggable="false" alt=""></div>
     <div class="lib-meta"><b>${esc(d.name)}</b><small>Document · ${d.pages} page${d.pages > 1 ? 's' : ''}</small></div>
     <button class="x" data-ren-doc="${esc(d.id)}" title="Renommer">✎</button><button class="x" data-del-doc="${esc(d.id)}" title="Retirer ce document de la régie">✕</button></div>`;
 /** Ligne de médiathèque d'un PowerPoint « en direct » : se glisse dans la grille ou sur une forme comme un média. */
-const presItem = p => `<div class="lib-item" draggable="true" data-ppt="${esc(p.name)}" title="PowerPoint en direct : glisse-moi sur une case ou une forme (ou double-clic)">
+const presItem = p => `<div class="lib-item${libSel.has('ppt:' + p.name) ? ' sel' : ''}" draggable="true" data-ppt="${esc(p.name)}" title="PowerPoint en direct : glisse-moi sur une case ou une forme (ou double-clic). Coche pour sélectionner plusieurs fichiers.">
+    <input type="checkbox" class="lib-ck" data-ck="${esc('ppt:' + p.name)}"${libSel.has('ppt:' + p.name) ? ' checked' : ''} title="Sélectionner">
     <div class="lib-th ppt"><span>PPT</span><img src="/api/ppt/thumb?name=${encodeURIComponent(p.name)}" loading="lazy" draggable="false" alt="" onerror="this.remove()"></div>
     <div class="lib-meta"><b>${esc(p.name)}</b><small>PowerPoint en direct · ${fmtSize(p.size)}</small></div>
     <button class="x" data-ren-ppt="${esc(p.name)}" title="Renommer">✎</button><button class="x" data-del-ppt="${esc(p.name)}" title="Retirer ce PowerPoint de la régie">✕</button></div>`;
@@ -1077,10 +1099,16 @@ function renderLib() {
   refreshLibSel(); attachLiveThumbs();
 }
 /** Met à jour la sélection dans la liste (cases, surlignage, barre d'actions) sans tout redessiner. */
+/** Clé de sélection d'une ligne de la médiathèque : nom du média, « doc:<id> » ou « ppt:<nom> » (les mêmes clés que show.files). */
+const libKey = el => (el?.dataset.media != null ? el.dataset.media : el?.dataset.doc != null ? 'doc:' + el.dataset.doc : el?.dataset.ppt != null ? 'ppt:' + el.dataset.ppt : null);
+/** Tous les fichiers de la médiathèque, dans l'ordre affiché (pour « Tout » et Maj-clic). */
+const libOrder = () => [...pres.map(fileKeyPpt), ...docList.map(fileKeyDoc), ...media.map(m => m.name)];
 function refreshLibSel() {
-  for (const n of [...libSel]) if (!media.some(m => m.name === n)) libSel.delete(n);
+  const all = new Set(libOrder());
+  for (const n of [...libSel]) if (!all.has(n)) libSel.delete(n);
   for (const el of $$('#lib .lib-item')) {
-    const on = libSel.has(el.dataset.media);
+    const k = libKey(el); if (k == null) continue;
+    const on = libSel.has(k);
     el.classList.toggle('sel', on);
     const ck = el.querySelector('.lib-ck'); if (ck) ck.checked = on;
   }
@@ -1092,6 +1120,30 @@ function refreshLibSel() {
       <button class="x on" data-act="sel-clear" title="Désélectionner">✕</button></div>` : '';
 }
 const usedBy = url => Object.values(show.clips).filter(c => c.src === url || c.items?.some(i => i.src === url)).length;
+/** Retire (médiathèque par show) ou supprime (ancien show) tous les fichiers cochés : médias, documents et PowerPoint. */
+async function deleteSelection() {
+  const keys = libOrder().filter(k => libSel.has(k));
+  if (!keys.length) return;
+  const docs = keys.filter(k => k.startsWith('doc:')).map(k => k.slice(4)), ppts = keys.filter(k => k.startsWith('ppt:')).map(k => k.slice(4)), names = keys.filter(k => !/^(doc|ppt):/.test(k));
+  if (!docs.length && !ppts.length) return deleteMedia(names);                 // que des médias : le chemin habituel
+  const used = names.reduce((a, n) => a + usedBy('/media/' + encodeURIComponent(n)), 0)
+    + Object.values(show.clips).filter(c => (c.doc && docs.includes(c.doc)) || (c.ppt && ppts.includes(c.ppt))).length;
+  const what = `ces ${keys.length} fichiers (${[names.length && names.length + ' média(s)', docs.length && docs.length + ' document(s)', ppts.length && ppts.length + ' PowerPoint'].filter(Boolean).join(', ')})`;
+  if (perShowFiles()) {
+    if (!confirm(`Retirer ${what} de ce show ?` + (used ? `\n\n${used} clip(s) de la grille les utilisent et deviendront noirs.` : '') + '\n\nLes fichiers restent sur l\'ordinateur.')) return;
+    removeFiles(keys); libSel.clear(); renderLib();
+    return toast(keys.length + ' fichiers retirés du show');
+  }
+  if (!confirm(`Supprimer ${what} de la régie ?` + (used ? `\n\n${used} clip(s) de la grille les utilisent et deviendront noirs.` : '') + '\n\nTes fichiers d\'origine ne sont pas touchés.')) return;
+  const r = await Promise.allSettled([
+    ...names.map(n => fetch('/api/media?name=' + encodeURIComponent(n), { method: 'DELETE' })),
+    ...docs.map(id => fetch('/api/docs?id=' + encodeURIComponent(id), { method: 'DELETE' })),
+    ...ppts.map(n => fetch('/api/ppt?name=' + encodeURIComponent(n), { method: 'DELETE' })),
+  ].map(pr => pr.then(x => { if (!x.ok) throw new Error(); })));
+  const ko = r.filter(x => x.status === 'rejected').length;
+  libSel.clear(); await loadMedia(); renderLib();
+  toast(ko ? `${ko} fichier(s) n'ont pas pu être supprimés.` : keys.length + ' fichiers supprimés', ko ? 'err' : '');
+}
 /** Supprime des fichiers de la médiathèque (après confirmation), en prévenant si des clips les utilisent. */
 async function deleteMedia(names) {
   const list = mediaByNames(names);
@@ -1199,17 +1251,23 @@ function bindLib() {
     if (act === 'open-folder') { await fetch('/api/open-media', { method: 'POST' }).catch(() => {}); toast(perShowFiles() ? 'Dépose tes fichiers dans ce dossier, puis « Importer → Fichiers déjà importés… » pour les ajouter à ce show.' : 'Dépose tes fichiers dans ce dossier puis clique sur ↻'); }
     if (act === 'capture') return openCaptureModal();
     if (act === 'pick-existing') return openExistingFiles();
-    if (act === 'sel-all') { libSel = new Set(media.map(m => m.name)); return refreshLibSel(); }
+    if (act === 'sel-all') { libSel = new Set(libOrder()); return refreshLibSel(); }
     if (act === 'sel-clear') { libSel.clear(); return refreshLibSel(); }
-    if (act === 'sel-del') return deleteMedia([...libSel]);
-    if (act === 'sel-grid') {
-      const list = media.filter(m => libSel.has(m.name));
-      const n = addClipsToGrid(list.map(clipFromMedia), 1).length;
-      if (n) toast(n > 1 ? n + ' clips posés dans la grille' : 'Clip posé dans la grille');
+    if (act === 'sel-del') return deleteSelection();
+    if (act === 'sel-grid') {                                   // médias, documents et PowerPoint cochés, chacun dans sa case
+      const clips = libOrder().filter(k => libSel.has(k)).map(k => {
+        if (k.startsWith('doc:')) { const d = docList.find(x => x.id === k.slice(4)); return d && docClip(d); }
+        if (k.startsWith('ppt:')) return pptClip(k.slice(4));
+        const m = media.find(x => x.name === k); return m && clipFromMedia(m);
+      }).filter(Boolean);
+      const placed = addClipsToGrid(clips, 1);
+      for (const c of placed) if (c.ppt && show.clips[c.id]) pptCmd(c, 'open');      // un PowerPoint en direct se lance dans PowerPoint
+      if (placed.length) toast(placed.length > 1 ? placed.length + ' clips posés dans la grille' : 'Clip posé dans la grille');
       return;
     }
     if (act === 'sel-slideshow') {
       const list = media.filter(m => libSel.has(m.name));
+      if ([...libSel].some(k => /^(doc|ppt):/.test(k))) toast('Un diaporama ne prend que des images et des vidéos : les documents et PowerPoint cochés n\'y sont pas ajoutés.', list.length ? '' : 'err');
       if (!list.length) return;
       addClipToGrid(slideshowFromMedia(list), 1);
       libSel.clear(); refreshLibSel();
@@ -1259,12 +1317,12 @@ function bindLib() {
     if (ds) { e.stopPropagation(); return ds.ren != null ? renameMedia(ds.ren) : ds.renDoc != null ? renameDoc(ds.renDoc) : ds.renPpt != null ? renamePpt(ds.renPpt) : renameCam(ds.renCam); }
     if (act || nw) return;
     // Sélection : case à cocher = ajoute/retire ; clic = ce fichier seul ; ⌘/Ctrl-clic = ajoute/retire ; Maj-clic = plage.
-    const ck = e.target.closest('[data-ck]')?.dataset.ck, it = e.target.closest('.lib-item')?.dataset.media;
-    if (!it) return;
+    const ck = e.target.closest('[data-ck]')?.dataset.ck, it = libKey(e.target.closest('.lib-item'));
+    if (it == null) return;
     if (ck || e.metaKey || e.ctrlKey) { if (libSel.has(it)) libSel.delete(it); else libSel.add(it); }
     else if (e.shiftKey && libLast) {
-      const a = media.findIndex(m => m.name === libLast), b = media.findIndex(m => m.name === it);
-      if (a >= 0 && b >= 0) for (let i = Math.min(a, b); i <= Math.max(a, b); i++) libSel.add(media[i].name);
+      const order = libOrder(), a = order.indexOf(libLast), b = order.indexOf(it);
+      if (a >= 0 && b >= 0) for (let i = Math.min(a, b); i <= Math.max(a, b); i++) libSel.add(order[i]);
     } else libSel = new Set([it]);
     libLast = it;
     refreshLibSel();
@@ -1333,13 +1391,13 @@ function countdownStart(c) {
 }
 function renderGrid() {
   const cols = show.cols;
-  let h = '<div class="g-corner"><button class="btn sm" data-act="add-layer" title="Ajouter un calque par-dessus les autres">＋ Calque</button></div>';
+  let h = '<div class="g-corner"><button class="btn sm" data-act="add-layer" title="Ajouter un calque par-dessus les autres">＋ Calque</button><span class="head-resizer" title="Tire pour élargir ou rétrécir la colonne des calques (double-clic : largeur d\'origine)"></span></div>';
   for (let i = 0; i < cols; i++) h += `<button class="g-col" data-col="${i}" title="Afficher la colonne ${i + 1} à la place du reste${i < 9 ? ' (touche ' + (i + 1) + ')' : ''} — Maj+clic : directement à la sortie">▶ ${i + 1}</button>`;
   h += '<button class="g-col add" data-act="add-col" title="Ajouter une colonne">＋</button>';
   for (const l of [...show.layers].reverse()) {
     h += `<div class="l-head${sel?.kind === 'layer' && sel.id === l.id ? ' sel' : ''}" data-layer="${l.id}" draggable="true" title="Glisse cette ligne sur une autre pour changer l'ordre des calques (celui du haut passe devant)">
         <div class="l-top"><span class="l-move"><button class="l-mv" data-act="row-up" title="Monter ce calque (passe devant)"${show.layers.indexOf(l) === show.layers.length - 1 ? ' disabled' : ''}>▲</button><button class="l-mv" data-act="row-down" title="Descendre ce calque (passe derrière)"${show.layers.indexOf(l) === 0 ? ' disabled' : ''}>▼</button></span>
-          <button class="l-name" data-act="sel-layer" title="Régler ce calque (mélange, fondu, effets)">${esc(l.name)}${l.zone && zoneName(l.zone) ? `<small class="l-zone">→ ${esc(zoneName(l.zone))}</small>` : ''}${(() => { const hid = show.outputs.filter(o => o.hidden.includes(l.id)); return hid.length ? `<small class="l-out" title="Masqué sur : ${esc(hid.map(o => o.name).join(', '))}">⊘ ${esc(hid.map(o => o.name).join(', '))}</small>` : ''; })()}</button>
+          <button class="l-name" data-act="sel-layer" title="${esc(l.name)} — régler ce calque (mélange, fondu, effets)">${esc(l.name)}${l.zone && zoneName(l.zone) ? `<small class="l-zone">→ ${esc(zoneName(l.zone))}</small>` : ''}${(() => { const hid = show.outputs.filter(o => o.hidden.includes(l.id)); return hid.length ? `<small class="l-out" title="Masqué sur : ${esc(hid.map(o => o.name).join(', '))}">⊘ ${esc(hid.map(o => o.name).join(', '))}</small>` : ''; })()}</button>
           <button class="l-btn${l.mute ? ' on' : ''}" data-act="mute" title="Masquer ce calque">M</button>
           <button class="l-btn" data-act="eject" title="Arrêter ce calque (fondu vers le vide)">■</button></div>
         <input type="range" class="l-op" min="0" max="1" step="0.01" value="${+l.opacity}" title="Opacité du calque">
@@ -1349,7 +1407,7 @@ function renderGrid() {
       h += c ? `<div class="cell${sel?.kind === 'clip' && sel.id === id ? ' sel' : ''}" data-layer="${l.id}" data-col="${col}" data-clip="${id}" draggable="true">
           <div class="c-th">${thumb(c)}</div><div class="c-bar"><i></i></div>
           <div class="c-name"><span class="tag">${TYPE_TAG[c.type]}</span>${esc(clipLabel(c))}</div>
-          ${hasClock(c) ? '<button class="c-pause" title="Pause / reprise"></button><button class="c-restart" title="Recommencer (compte à rebours : remis au départ, en attente de l\'envoi)">↺</button>' : ''}<button class="c-edit" title="Régler ce clip sans le lancer">✎</button><button class="c-x" title="Retirer de la grille">✕</button></div>`
+          ${hasClock(c) ? '<button class="c-pause" title="Pause / reprise"></button><button class="c-restart" title="Recommencer (compte à rebours : remis au départ, en attente de l\'envoi)">↺</button>' : ''}<button class="c-stop" title="Éteindre ce clip (fondu vers le vide) — en mode Préparation : retiré de la préparation ; Maj+clic : coupé directement à la sortie">■</button><button class="c-edit" title="Régler ce clip sans le lancer">✎</button><button class="c-x" title="Retirer de la grille">✕</button></div>`
         : `<div class="cell empty" data-layer="${l.id}" data-col="${col}"></div>`;
     });
     h += '<div class="g-fill"></div>';
@@ -1391,6 +1449,18 @@ function applyShapeBar() { const b = $('#shapebar'); if (b) b.hidden = !shapeBar
 function setCell(layerId, col, clipId) { show.cells[layerId][col] = clipId; }
 function bindGrid() {
   const grid = $('#grid');
+  // Largeur de la colonne des calques : poignée à droite de « ＋ Calque », mémorisée (double-clic = largeur d'origine).
+  const applyHeadW = w => { if (w) grid.style.setProperty('--headw', w + 'px'); else grid.style.removeProperty('--headw'); };
+  applyHeadW(+localStorage.getItem('regieLed.headW') || 0);
+  grid.addEventListener('pointerdown', e => {
+    const hz = e.target.closest('.head-resizer'); if (!hz) return;
+    e.preventDefault(); e.stopPropagation(); hz.setPointerCapture(e.pointerId); hz.classList.add('on'); document.body.classList.add('resizing');
+    const x0 = e.clientX, w0 = grid.querySelector('.g-corner').getBoundingClientRect().width;
+    const move = ev => { const w = Math.round(Math.max(110, Math.min(420, w0 + ev.clientX - x0))); applyHeadW(w); try { localStorage.setItem('regieLed.headW', String(w)); } catch { /* sans gravité */ } };
+    const up = () => { hz.classList.remove('on'); document.body.classList.remove('resizing'); hz.removeEventListener('pointermove', move); hz.removeEventListener('pointerup', up); hz.removeEventListener('pointercancel', up); };
+    hz.addEventListener('pointermove', move); hz.addEventListener('pointerup', up); hz.addEventListener('pointercancel', up);
+  }, true);
+  grid.addEventListener('dblclick', e => { if (e.target.closest('.head-resizer')) { applyHeadW(0); try { localStorage.removeItem('regieLed.headW'); } catch { /* sans gravité */ } } });
   grid.addEventListener('click', e => {
     const act = e.target.closest('[data-act]')?.dataset.act;
     const head = e.target.closest('.l-head'), cell = e.target.closest('.cell'), colBtn = e.target.closest('.g-col[data-col]');
@@ -1418,6 +1488,7 @@ function bindGrid() {
     if (cell?.dataset.clip) {
       const { layer, col, clip } = cell.dataset;
       if (e.target.closest('.c-x')) { setCell(layer, +col, null); cleanup(); commit(); renderGrid(); renderInspector(); renderCues(); return; }
+      if (e.target.closest('.c-stop')) return stopClip(layer, clip, e.shiftKey);
       if (e.target.closest('.c-pause')) return pauseToggle(show.clips[clip]);
       if (e.target.closest('.c-restart')) return restartClip(show.clips[clip]);
       const changed = !(sel?.kind === 'clip' && sel.id === clip);
@@ -2047,7 +2118,7 @@ function micFrame() {
 function updateTop() {
   const sn = $('#show-name'); if (sn) { sn.textContent = show.name || 'Show'; sn.title = `Show en cours : « ${show.name || 'Show'} » (nom modifiable dans Réglages → Show)`; }
   $('#blackout').classList.toggle('on', !!live.blackout);
-  const am = $('#audio-mute'); if (am) { am.classList.toggle('on', !!live.mute); am.textContent = live.mute ? '🔇 Muet' : '🔊 Son'; am.title = live.mute ? 'Son de sortie coupé : clic pour le rétablir' : 'Couper tout le son de sortie (vidéos, sources en direct), sans toucher à l\'image'; }
+  const am = $('#audio-mute'); if (am) { am.classList.toggle('on', !!live.mute); am.innerHTML = live.mute ? '🔇<span class="lbl"> Muet</span>' : '🔊<span class="lbl"> Son</span>'; am.title = live.mute ? 'Son de sortie coupé : clic pour le rétablir' : 'Couper tout le son de sortie (vidéos, sources en direct), sans toucher à l\'image'; }
   $('#mic').classList.toggle('on', micOn);
   $('#mon-tag').textContent = live.test ? 'MIRE' : live.blackout ? 'NOIR' : '';
   if (document.activeElement !== $('#bpm')) $('#bpm').value = show.bpm;
@@ -2104,6 +2175,19 @@ async function openOutput(id = 'main') {
   }
   toast(placed ? `« ${o.name} » ouverte sur l'écran « ${placed.label || '2'} » — clique dedans pour le plein écran.` : `Fenêtre « ${o.name} » ouverte : glisse-la sur le bon écran puis clique dedans (plein écran).`);
 }
+/** Supprime une sortie (jamais la sortie spectateurs) : confirmation, fermeture de sa fenêtre, oubli de son écran. */
+function deleteOutput(id) {
+  const o = show.outputs.find(x => x.id === id); if (!o || o.id === 'main') return;
+  if (!confirm(`Supprimer la sortie « ${o.name} » ?\n\nSa fenêtre se ferme si elle est ouverte ; l'écran qui l'affichait devient libre.`)) return;
+  show.outputs = show.outputs.filter(x => x.id !== o.id); delete outInfos[o.id]; if (monOut === o.id) monOut = 'main';
+  bc.postMessage({ t: 'close', out: o.id });                                   // la fenêtre de cette sortie se ferme d'elle-même
+  try { window.regieDesktop?.setOutputDisplay?.(o.id, 'auto'); } catch { /* ancienne version */ }   // oublie l'écran choisi pour elle
+  if (!window.regieDesktop) try { const w = window.open('', 'regie-led-sortie-' + o.id); if (w && w !== window) w.close(); } catch { /* hors d'atteinte */ }
+  commit(); renderGrid(); renderInspector(); updatePlaying();
+  if (tab === 'reglages') renderSettings();
+  if (tab === 'outputs') renderOutputsView();
+  toast(`Sortie « ${o.name} » supprimée.`);
+}
 function updateOutStatus() {
   const el = $('#out-status'), on = Date.now() - outSeen < 2600 && outInfo;
   let txt = 'Sortie fermée', cls = 'out-status';
@@ -2129,12 +2213,79 @@ function updateOutStatus() {
   $('#open-out').textContent = on ? 'Sortie ouverte' : 'Ouvrir la sortie';
   $('#open-out').classList.toggle('gold', !on);
 }
+/* ---------- indicateur Santé : prévenir avant que la sortie ne saccade ----------
+ * Chaque fenêtre de sortie mesure sa fluidité (images en retard, images de vidéo perdues, vidéos lourdes, mémoire) ;
+ * l'application de bureau donne aussi processeur, mémoire totale et chaleur. Vert = tout va bien, orange = à surveiller,
+ * rouge = ça risque de couper. Les changements d'état sont notés dans un journal (heure + cause). */
+const healthHist = {}, healthLog = []; let healthLevel = 'ok', machine = null, machineAt = 0, regieFrames = 0, regieFps = 0, regieFpsT = performance.now();
+function healthOf(o) {
+  const inf = o.id === 'main' ? outInfo : outInfos[o.id];
+  if (!outIsOpen(o.id) || !inf) return null;
+  const h = inf.health || {}, hist = (healthHist[o.id] ||= []);
+  hist.push(inf.fps || 0); if (hist.length > 300) hist.shift();
+  const ref = Math.max(30, [...hist].sort((a, b) => a - b)[Math.floor(hist.length * 0.9)] || 60);      // fréquence habituelle de cet écran
+  const why = [];
+  let lvl = 'ok';
+  const up = (l, msg) => { why.push(msg); if (l === 'bad' || lvl === 'ok') lvl = l; };
+  if (h.hidden) up('warn', 'fenêtre cachée ou réduite : le navigateur la ralentit');
+  else {
+    if (inf.fps < ref * 0.6) up('bad', `${inf.fps} images/s au lieu de ${ref}`); else if (inf.fps < ref * 0.85) up('warn', `${inf.fps} images/s au lieu de ${ref}`);
+    if (h.late >= 6) up('bad', `${h.late} saccades par seconde`); else if (h.late >= 2) up('warn', `${h.late} saccades par seconde`);
+    if (h.dropped >= 10) up('bad', `${h.dropped} images de vidéo perdues par seconde`); else if (h.dropped >= 2) up('warn', `${h.dropped} images de vidéo perdues par seconde`);
+  }
+  if (h.heavy?.length) up(lvl === 'ok' ? 'warn' : lvl, 'vidéo plus grande que du 1080p : ' + h.heavy.join(', '));
+  return { lvl, why, inf, h, ref };
+}
+async function healthMachine() {
+  if (!window.regieDesktop?.metrics || Date.now() - machineAt < 2000) return;
+  machineAt = Date.now();
+  try { machine = await window.regieDesktop.metrics(); } catch { machine = null; }
+}
+function healthMachineLevel() {
+  if (!machine) return { lvl: 'ok', why: [] };
+  const why = []; let lvl = 'ok';
+  const up = (l, msg) => { why.push(msg); if (l === 'bad' || lvl === 'ok') lvl = l; };
+  if (machine.thermal === 'critical') up('bad', 'ordinateur très chaud : il se bride'); else if (machine.thermal === 'serious') up('warn', 'ordinateur chaud : il commence à se brider');
+  if (machine.mem > 6000) up('bad', `Régie LED utilise ${(machine.mem / 1024).toFixed(1)} Go de mémoire`); else if (machine.mem > 3500) up('warn', `Régie LED utilise ${(machine.mem / 1024).toFixed(1)} Go de mémoire`);
+  return { lvl, why };
+}
+function healthUpdate() {
+  regieFps = Math.round(regieFrames * 1000 / Math.max(1, performance.now() - regieFpsT)); regieFrames = 0; regieFpsT = performance.now();
+  healthMachine();
+  const outs = show.outputs.map(o => ({ o, r: healthOf(o) })), mach = healthMachineLevel();
+  const all = [...outs.filter(x => x.r).map(x => x.r.lvl), mach.lvl], lvl = all.includes('bad') ? 'bad' : all.includes('warn') ? 'warn' : 'ok';
+  if (lvl !== healthLevel) {
+    const cause = [...outs.filter(x => x.r && x.r.lvl !== 'ok').map(x => x.o.name + ' : ' + x.r.why.join(', ')), ...mach.why].join(' · ') || 'tout est revenu à la normale';
+    healthLog.unshift({ t: Date.now(), lvl, cause }); healthLog.length = Math.min(healthLog.length, 100);
+    if (lvl === 'bad') toast('⚠ Santé : ' + cause, 'err');
+    healthLevel = lvl;
+  }
+  const b = $('#health');
+  if (b) {
+    b.className = 'health ' + lvl;
+    b.title = lvl === 'ok' ? 'Santé : tout est fluide (clic pour le détail)' : 'Santé : ' + [...outs.filter(x => x.r && x.r.lvl !== 'ok').map(x => x.o.name + ' — ' + x.r.why.join(', ')), ...mach.why].join(' · ');
+  }
+  if (!$('#health-panel').hidden) renderHealthPanel(outs, mach);
+}
+function renderHealthPanel(outs, mach) {
+  outs ||= show.outputs.map(o => ({ o, r: healthOf(o) })); mach ||= healthMachineLevel();
+  const LBL = { ok: 'fluide', warn: 'à surveiller', bad: 'risque de coupure' };
+  const spark = id => { const h = healthHist[id] || [], max = Math.max(60, ...h); return `<svg class="hp-spark" viewBox="0 0 300 30" preserveAspectRatio="none"><polyline points="${h.map((v, i) => `${i},${30 - v / max * 28}`).join(' ')}"/></svg>`; };
+  $('#health-panel').innerHTML = `<div class="hp-h"><b>Santé</b><button class="x" data-act="health-close" title="Fermer">✕</button></div>
+    ${outs.map(({ o, r }) => `<div class="hp-out ${r ? r.lvl : 'off'}"><div class="hp-row"><i></i><b>${esc(o.name)}</b><span>${r ? LBL[r.lvl] : 'fenêtre fermée'}</span></div>
+      ${r ? `<div class="hp-num"><span><b>${r.inf.fps}</b> i/s</span><span><b>${r.h.late ?? '–'}</b> saccades/s</span><span><b>${r.h.dropped ?? '–'}</b> img vidéo perdues/s</span><span><b>${r.h.videos ?? 0}</b> vidéo(s)</span><span>pire image ${r.h.maxMs ?? '–'} ms</span></div>${spark(o.id)}${r.why.length ? `<p class="hp-why">${esc(r.why.join(' · '))}</p>` : ''}` : ''}</div>`).join('')}
+    <div class="hp-out ${mach.lvl}"><div class="hp-row"><i></i><b>Ordinateur</b><span>${machine ? LBL[mach.lvl] : 'disponible dans l\'application Régie LED'}</span></div>
+      ${machine ? `<div class="hp-num"><span>processeur <b>${machine.cpu} %</b></span><span>mémoire <b>${(machine.mem / 1024).toFixed(1)} Go</b></span><span>chaleur <b>${({ nominal: 'normale', fair: 'correcte', serious: 'élevée', critical: 'critique' })[machine.thermal] || '–'}</b></span><span>régie ${regieFps} i/s</span></div>${mach.why.length ? `<p class="hp-why">${esc(mach.why.join(' · '))}</p>` : ''}` : `<div class="hp-num"><span>régie ${regieFps} i/s</span></div>`}</div>
+    <div class="hp-log"><b>Journal</b>${healthLog.length ? healthLog.slice(0, 15).map(e => `<div class="${e.lvl}"><time>${new Date(e.t).toLocaleTimeString('fr-FR')}</time> ${esc(e.cause)}</div>`).join('') : '<div class="ok">Rien à signaler depuis l\'ouverture de la régie.</div>'}</div>
+    <p class="note">Orange ou rouge : vidéo trop lourde (convertis-la en MP4 H.264 1080p), ordinateur trop chaud ou sur batterie, trop de sorties ouvertes. La vignette Outputs et chaque sortie secondaire décodent aussi les vidéos.</p>`;
+}
 /* ---------- raccourcis clavier personnalisés (show.keys) ---------- */
 const KEY_ACTIONS = [
   ['clip', 'Lancer un clip'], ['col', 'Afficher une colonne'], ['take', 'Envoyer la préparation à la sortie'], ['next', 'Séquence suivante'],
   ['prev', 'Séquence précédente'], ['cue', 'Aller à une séquence'], ['scene', 'Ouvrir une scène'], ['black', 'Écran noir (bascule)'],
   ['stop', 'Tout arrêter'], ['eject', 'Arrêter un calque'], ['mute', 'Masquer / afficher un calque'], ['tap', 'Taper le tempo'],
   ['pause', 'Pause / reprise du clip sélectionné'], ['restart', 'Recommencer le clip sélectionné'],
+  ['clipdirect', 'Lancer un clip directement à la sortie'], ['coldirect', 'Afficher une colonne directement à la sortie'], ['cuedirect', 'Envoyer une séquence directement à la sortie'],
   ['cond', 'Ouvrir un conducteur'], ['audiomute', 'Couper / rétablir le son de sortie'], ['panels', 'Masquer / afficher les panneaux latéraux'],
 ];
 const KEY_NAMES = { Space: 'Espace', Enter: 'Entrée', Escape: 'Échap', Backspace: '⌫', Delete: 'Suppr', Tab: 'Tab', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
@@ -2158,17 +2309,17 @@ const keyMatch = (k, e) => k.code === e.code && !!k.shift === e.shiftKey && !!k.
 /** Raccourci à exécuter pour une touche. Un raccourci vaut depuis n'importe quelle scène : s'il vise une colonne ou un calque
  *  d'une autre scène, la régie ouvre d'abord cette scène. */
 const keyFor = e => show.keys.find(k => keyMatch(k, e));
-const SCENE_ACTIONS = ['col', 'eject', 'mute'];          // actions dont la cible appartient à une scène précise (k.scene ; '' = la scène ouverte)
+const SCENE_ACTIONS = ['col', 'coldirect', 'eject', 'mute'];          // actions dont la cible appartient à une scène précise (k.scene ; '' = la scène ouverte)
 const keyScopeLabel = k => (SCENE_ACTIONS.includes(k.action) ? (k.scene ? 'scène « ' + (M.sceneById(show, k.scene)?.name || '?') + ' »' : 'scène ouverte') : '');
 /** Cibles possibles d'une action : [valeur, libellé]. `sceneId` : scène visée pour les colonnes et calques. */
 function keyTargets(action, sceneId = show.sceneId) {
-  if (action === 'clip') {
+  if (action === 'clip' || action === 'clipdirect') {
     const out = [];
     for (const sc of show.scenes) for (const l of sc.layers) for (const id of sc.cells[l.id]) if (id && show.clips[id]) out.push([id, (show.scenes.length > 1 ? sc.name + ' · ' : '') + l.name + ' · ' + clipLabel(show.clips[id])]);
     return out;
   }
-  if (action === 'col') return Array.from({ length: 32 }, (_, i) => [String(i + 1), 'Colonne ' + (i + 1)]);
-  if (action === 'cue') return show.conductors.flatMap(cd => cd.cues.map((c, i) => [c.id, (show.conductors.length > 1 ? cd.name + ' · ' : '') + (i + 1) + ' · ' + c.name]));
+  if (action === 'col' || action === 'coldirect') return Array.from({ length: 32 }, (_, i) => [String(i + 1), 'Colonne ' + (i + 1)]);
+  if (action === 'cue' || action === 'cuedirect') return show.conductors.flatMap(cd => cd.cues.map((c, i) => [c.id, (show.conductors.length > 1 ? cd.name + ' · ' : '') + (i + 1) + ' · ' + c.name]));
   if (action === 'cond') return show.conductors.map(c => [c.id, c.name]);
   if (action === 'scene') return show.scenes.map(s => [s.id, s.name]);
   if (action === 'eject' || action === 'mute') { const sc = M.sceneById(show, sceneId) || M.sceneById(show, show.sceneId); return sc.layers.map(l => [l.id, l.name]); }
@@ -2182,21 +2333,22 @@ function runKey(k, e) {
     if (!M.sceneById(show, k.scene)) return toast('Ce raccourci vise une scène qui n\'existe plus.', 'err');
     switchScene(k.scene);
   }
-  if (a === 'clip') {
+  if (a === 'clip' || a === 'clipdirect') {
     const sc = show.scenes.find(s => Object.values(s.cells).some(row => row.includes(t)));
     if (!sc || !show.clips[t]) return toast('Ce raccourci vise un clip qui n\'existe plus.', 'err');
     if (sc.id !== show.sceneId) switchScene(sc.id);
     const lid = Object.keys(show.cells).find(id => show.cells[id].includes(t));
-    sel = { kind: 'clip', id: t }; launch(lid, t); renderGrid(); renderInspector();
+    sel = { kind: 'clip', id: t }; (a === 'clipdirect' ? launchDirect : launch)(lid, t); renderGrid(); renderInspector();
   } else if (a === 'col') launchColumn(+t - 1, e?.shiftKey);
+  else if (a === 'coldirect') launchColumn(+t - 1, true);
   else if (a === 'take') take();
   else if (a === 'next') nextCue();
   else if (a === 'prev') prevCue();
-  else if (a === 'cue') {                                    // la séquence peut être dans un autre conducteur : on l'ouvre d'abord
+  else if (a === 'cue' || a === 'cuedirect') {             // la séquence peut être dans un autre conducteur : on l'ouvre d'abord
     const cd = show.conductors.find(x => x.cues.some(c => c.id === t));
     if (!cd) return toast('Ce raccourci vise une séquence qui n\'existe plus.', 'err');
     if (cd.id !== show.condId) switchConductor(cd.id);
-    const i = show.cues.findIndex(c => c.id === t); if (i >= 0) (prepOn ? prepareCue : goCue)(i);
+    const i = show.cues.findIndex(c => c.id === t); if (i >= 0) ((prepOn && a === 'cue') ? prepareCue : goCue)(i);
   }
   else if (a === 'cond') { if (!show.conductors.some(c => c.id === t)) return toast('Ce raccourci vise un conducteur qui n\'existe plus.', 'err'); switchConductor(t); }
   else if (a === 'audiomute') toggleAudioMute();
@@ -2210,7 +2362,7 @@ function runKey(k, e) {
   else if (a === 'pause' || a === 'restart') { const c = sel?.kind === 'clip' && show.clips[sel.id]; if (!c) return toast('Sélectionne d\'abord un clip (clic sur sa case).', 'err'); (a === 'pause' ? pauseToggle : restartClip)(c); }
   else return false;
   // Retour visible : on sait que c'est bien le raccourci qui a agi, et où (préparation ou sortie).
-  const what = KEY_ACTIONS.find(x => x[0] === a)?.[1] || a, where = (a === 'clip' || a === 'col') ? (prepOn && !(a === 'col' && e?.shiftKey) ? ' → préparation (Entrée pour envoyer)' : ' → sortie') : '';
+  const what = KEY_ACTIONS.find(x => x[0] === a)?.[1] || a, where = /direct$/.test(a) ? '' : (a === 'clip' || a === 'col' || a === 'cue') ? (prepOn && !(a === 'col' && e?.shiftKey) ? ' → préparation (Entrée pour envoyer)' : ' → sortie') : '';
   const sc = SCENE_ACTIONS.includes(a) && show.scenes.length > 1 ? ' (' + M.sceneById(show, show.sceneId).name + ')' : '';
   toast(`${keyLabel(k)} : ${what}${k.target ? ' — ' + keyTargetLabel(k) : ''}${sc}${where}`);
   return true;
@@ -2372,6 +2524,8 @@ function bindTop() {
   $('#master').addEventListener('input', e => { show.master.opacity = +e.target.value; commit(); });
   $('#blackout').addEventListener('click', toggleBlackout);
   $('#audio-mute').addEventListener('click', toggleAudioMute);
+  $('#health').addEventListener('click', () => { const p = $('#health-panel'); p.hidden = !p.hidden; if (!p.hidden) renderHealthPanel(); });
+  $('#health-panel').addEventListener('click', e => { if (e.target.closest('[data-act="health-close"]')) $('#health-panel').hidden = true; });
   $('#open-out').addEventListener('click', openOutput);
   $('#out-fix').addEventListener('click', async () => {
     if (!refreshOutput()) await openOutput();          // la recharger sur place, sinon en ouvrir une neuve
@@ -2404,7 +2558,7 @@ function bindTop() {
     else if (e.key === 'b' || e.key === 'B') toggleBlackout();
     else if (e.key === 't' || e.key === 'T') tap();
     else if (e.key === 'Escape') { sel = null; zoneSel = null; libSel.clear(); refreshLibSel(); renderGrid(); renderCues(); renderInspector(); renderShapeBar(); renderShapes(); }
-    else if (tab === 'regie' && libSel.size && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); deleteMedia([...libSel]); }
+    else if (tab === 'regie' && libSel.size && (e.key === 'Delete' || e.key === 'Backspace')) { e.preventDefault(); deleteSelection(); }
     else if (tab === 'regie' && /^Digit[1-9]$/.test(e.code)) launchColumn(+e.code.slice(5) - 1, e.shiftKey);
     else if (tab === 'regie' && ['ArrowRight', 'ArrowLeft', 'PageDown', 'PageUp'].includes(e.key)) {
       const c = activePaged(), dir = e.key === 'ArrowRight' || e.key === 'PageDown' ? 'next' : 'prev';
@@ -3064,7 +3218,7 @@ function renderOutputsView() {
       return `<div class="oc${main ? ' main' : ''}${on ? ' on' : ''}" data-out="${esc(o.id)}">
         <div class="oc-h"><span class="out-dot"></span><input type="text" data-out-f="name" data-out="${esc(o.id)}" value="${esc(o.name)}" title="Nom de la sortie">
           <span class="oc-badge">${main ? 'MASTER · spectateurs' : 'Sortie ' + (show.outputs.indexOf(o) + 1)}</span>
-          <button class="btn sm${on ? '' : ' gold'}" data-act="out-open" data-out="${esc(o.id)}">${on ? 'Rouvrir' : 'Ouvrir'}</button></div>
+          <button class="btn sm${on ? '' : ' gold'}" data-act="out-open" data-out="${esc(o.id)}">${on ? 'Rouvrir' : 'Ouvrir'}</button>${main ? '' : `<button class="btn sm danger oc-del" data-act="out-del" data-out="${esc(o.id)}" title="Supprimer cette sortie (sa fenêtre se ferme)">✕</button>`}</div>
         <div class="oc-screen"><canvas data-outcv="${esc(o.id)}"></canvas><span class="oc-st" data-outst="${esc(o.id)}">${esc(outputStatus(o))}</span></div>
         <div class="oc-f">${screenSelect(o)}</div>
         <div class="oc-f">${main ? '<span class="note">Toute la composition, avec le mapping (onglet Mapping) et le son.</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie"><option value="comp"${o.mode !== 'zone' ? ' selected' : ''}>Toute la composition</option>${zones.map(z => `<option value="zone:${esc(z.id)}"${o.mode === 'zone' && o.zoneId === z.id ? ' selected' : ''}>Zone « ${esc(z.name)} » en plein cadre</option>`).join('')}</select>`}</div>
@@ -3078,6 +3232,7 @@ function bindOutputsView() {
     const act = e.target.closest('[data-act]')?.dataset.act, id = e.target.closest('[data-out]')?.dataset.out;
     if (act === 'out-add') return addOutputAsk();
     if (act === 'out-open' && id) return openOutput(id);
+    if (act === 'out-del' && id) return deleteOutput(id);
     if (act === 'screens') return loadScreens(true).then(() => { renderOutputsView(); if (!screens) toast('Détection des écrans indisponible ou refusée sur ce navigateur.', 'err'); });
   });
   v.addEventListener('change', e => {
@@ -3155,7 +3310,11 @@ function outputsPanel() {
 }
 /* ---------- espace disque : doublons et fichiers inutilisés ---------- */
 const fmtMo = n => (n >= 1e9 ? (n / 1e9).toFixed(1).replace('.', ',') + ' Go' : Math.max(n ? 0.1 : 0, n / 1e6).toFixed(n >= 1e8 ? 0 : 1).replace('.', ',') + ' Mo');
-let storageInfo = null, cleanDays = 30;
+/** Durées du panneau Espace disque : libres (1 à 3650 jours), mémorisées ; les valeurs habituelles sont proposées en suggestion. */
+const clampDays = (v, d) => { const n = Math.round(+v); return n >= 1 ? Math.min(3650, n) : d; };
+let storageInfo = null, cleanDays = clampDays(localStorage.getItem('regieLed.cleanDays'), 30);
+let autoCleanDays = clampDays(localStorage.getItem('regieLed.autoCleanDays'), 90);     // durée proposée quand on coche le nettoyage automatique
+const daysList = '<datalist id="days-sugg">' + [7, 15, 30, 60, 90, 180, 365].map(d => `<option value="${d}">`).join('') + '</datalist>';
 async function loadStorage() {
   const el = $('#storage-panel'); if (!el) return;
   try { storageInfo = await (await fetch('/api/storage')).json(); } catch { el.innerHTML = '<p class="note">Impossible de lire l\'espace disque (serveur local injoignable).</p>'; return; }
@@ -3169,8 +3328,9 @@ function renderStorage() {
   const day = t => new Date(t).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
   el.innerHTML = `<p><b>${fmtMo(sum(all))}</b> dans le dossier de la régie — médias ${fmtMo(sum(st.media))}, documents ${fmtMo(sum(st.docs))}, PowerPoint ${fmtMo(sum(st.ppt))}.</p>
     <div class="st-row"><span>${dupN ? `<b>${dupN}</b> fichier${dupN > 1 ? 's' : ''} en double (${fmtMo(dupSize)})` : 'Aucun doublon'}</span>${dupN ? '<button class="btn sm gold" data-act="storage-dedupe">Supprimer les doublons</button>' : ''}</div>
-    <div class="st-row"><span>Inutilisés depuis plus de <select id="clean-days">${[7, 30, 60, 90, 180].map(d => `<option value="${d}"${d === cleanDays ? ' selected' : ''}>${d} jours</option>`).join('')}</select> : <b>${old.length}</b> (${fmtMo(sum(old))})</span>${old.length ? '<button class="btn sm danger" data-act="storage-clean">Mettre à la corbeille</button>' : ''}</div>
-    <label class="f"><span>Nettoyage automatique</span><select id="auto-clean"><option value="0"${!st.autoClean ? ' selected' : ''}>Jamais</option>${[30, 60, 90, 180].map(d => `<option value="${d}"${st.autoClean === d ? ' selected' : ''}>Au démarrage : inutilisés depuis ${d} jours</option>`).join('')}</select></label>
+    ${daysList}<div class="st-row"><span>Inutilisés depuis plus de <input type="number" class="st-days" id="clean-days" list="days-sugg" min="1" max="3650" step="1" value="${cleanDays}" title="Tape le nombre de jours que tu veux (1 à 3650), puis Entrée"> jours : <b>${old.length}</b> (${fmtMo(sum(old))})</span>${old.length ? '<button class="btn sm danger" data-act="storage-clean">Mettre à la corbeille</button>' : ''}</div>
+    <div class="st-row st-auto"><label class="chk" title="À chaque démarrage, la régie met à la corbeille les fichiers inutilisés depuis ce nombre de jours"><input type="checkbox" id="auto-clean-on"${st.autoClean ? ' checked' : ''}> Nettoyage automatique au démarrage : inutilisés depuis</label>
+      <span><input type="number" class="st-days" id="auto-clean-days" list="days-sugg" min="1" max="3650" step="1" value="${st.autoClean || autoCleanDays}"${st.autoClean ? '' : ' disabled'} title="Tape le nombre de jours que tu veux (1 à 3650), puis Entrée"> jours</span></div>
     <p class="note">« Utilisé » = dans le show en cours, ou dans un show ouvert pendant cette période (chaque show ouvert met à jour ses fichiers). Les fichiers enlevés vont dans la <b>corbeille de l'ordinateur</b> : récupérables tant qu'elle n'est pas vidée. Un fichier déjà présent n'est plus jamais copié une deuxième fois à l'import.</p>
     <details><summary>Détail (${all.length} fichiers, du plus lourd au plus léger)</summary><div class="st-list">${all.sort((a, b) => b.size - a.size).map(x => `<div class="st-item${x.used ? ' used' : ''}"><span>${esc(x.name)}</span><small>${x.kind} · ${fmtMo(x.size)} · ${x.used ? 'dans ce show' : 'utilisé le ' + day(x.lastUsed)}</small></div>`).join('')}</div></details>`;
 }
@@ -3201,9 +3361,16 @@ function bindSettings() {
   const v = $('#view-reglages');
   v.addEventListener('click', e => { const act = e.target.closest('[data-act]')?.dataset.act; if (act?.startsWith('storage-')) storageAction(act); });
   v.addEventListener('change', async e => {
-    if (e.target.id === 'clean-days') { cleanDays = +e.target.value; renderStorage(); }
-    if (e.target.id === 'auto-clean') {
-      const r = await (await fetch('/api/storage/auto?days=' + e.target.value, { method: 'POST' })).json().catch(() => ({}));
+    if (e.target.id === 'clean-days') {
+      cleanDays = clampDays(e.target.value, cleanDays);
+      try { localStorage.setItem('regieLed.cleanDays', String(cleanDays)); } catch { /* sans gravité */ }
+      renderStorage(); $('#clean-days')?.focus();
+    }
+    if (e.target.id === 'auto-clean-on' || e.target.id === 'auto-clean-days') {
+      const on = $('#auto-clean-on').checked, inp = $('#auto-clean-days');
+      autoCleanDays = clampDays(inp.value, autoCleanDays); inp.value = autoCleanDays; inp.disabled = !on;
+      try { localStorage.setItem('regieLed.autoCleanDays', String(autoCleanDays)); } catch { /* sans gravité */ }
+      const r = await (await fetch('/api/storage/auto?days=' + (on ? autoCleanDays : 0), { method: 'POST' })).json().catch(() => ({}));
       if (storageInfo) storageInfo.autoClean = r.autoClean || 0;
       toast(r.autoClean ? `Au démarrage, la régie mettra à la corbeille les fichiers inutilisés depuis ${r.autoClean} jours.` : 'Nettoyage automatique désactivé.');
     }
@@ -3238,13 +3405,7 @@ function bindSettings() {
     if (act === 'kbd-show') return openKeyboard();
     if (act === 'out-add') return addOutputAsk();
     if (act === 'out-open' && outId) return openOutput(outId);
-    if (act === 'out-del' && outId) {
-      const o = M.outputById(show, outId); if (!o || o.id === 'main') return;
-      if (!confirm(`Supprimer la sortie « ${o.name} » ? (ferme aussi sa fenêtre si elle est ouverte)`)) return;
-      show.outputs = show.outputs.filter(x => x.id !== o.id); delete outInfos[o.id]; if (monOut === o.id) monOut = 'main';
-      try { const w = window.open('', 'regie-led-sortie-' + o.id); if (w && w !== window) { if (w.location.href === 'about:blank') w.close(); else w.close(); } } catch { /* hors d'atteinte */ }
-      commit(); renderSettings(); renderGrid(); renderInspector(); updatePlaying(); return;
-    }
+    if (act === 'out-del' && outId) return deleteOutput(outId);
     if (act === 'key-capture') {
       const action = $('#key-action').value, target = $('#key-target')?.value || '', scene = SCENE_ACTIONS.includes(action) ? ($('#key-scene')?.value || show.sceneId) : '';
       return captureKey(e.target.closest('.btn'), k => { const nk = { ...k, action, target, scene }; setKey(nk); $('#keys-custom').innerHTML = keysPanel(); toast(`Raccourci ${keyLabel(k)} enregistré (${keyScopeLabel(nk)}).`); });
@@ -3323,6 +3484,7 @@ let slowT = 0;
 function loop(t) {
   engLive = eng;
   requestAnimationFrame(loop);
+  regieFrames++;
   if (eng) {
     eng.setState(show, live); eng.frame();
     if (tab === 'regie') {
@@ -3350,6 +3512,7 @@ function loop(t) {
   if (t - slowT > 250) {
     slowT = t;
     updateOutStatus();
+    if (t - (window.__healthT || 0) > 1000) { window.__healthT = t; healthUpdate(); }
     if (tab === 'outputs') for (const o of show.outputs) {             // état de chaque fenêtre de sortie
       const st = $(`#view-outputs [data-outst="${CSS.escape(o.id)}"]`), on = outIsOpen(o.id), card = st?.closest('.oc');
       if (st && st.textContent !== outputStatus(o)) st.textContent = outputStatus(o);

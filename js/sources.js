@@ -14,6 +14,18 @@ class Base {
     try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, el); } catch { /* image pas encore décodable */ }
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   }
+  /** Image d'une vidéo vers la carte graphique. Dans les aperçus de la régie, une vidéo bien plus grande que l'aperçu (4K…) est
+   *  d'abord réduite : une 4K complète à chaque image, dans deux ou trois aperçus en plus de la sortie, peut saturer un PC portable
+   *  (vidéo figée à la sortie). La fenêtre de sortie, elle, garde toujours la pleine résolution. */
+  uploadVideo(v) {
+    const eng = this.eng;
+    if (eng.role === 'output' || !eng.maxW || v.videoWidth <= eng.maxW * 2) return this.upload(v);
+    const w = Math.round(eng.maxW * 1.5), h = Math.max(1, Math.round(v.videoHeight * w / v.videoWidth));
+    const cv = this.small ||= document.createElement('canvas');
+    if (cv.width !== w || cv.height !== h || !this.smallCtx) { cv.width = w; cv.height = h; this.smallCtx = cv.getContext('2d', { alpha: false }); }
+    try { this.smallCtx.drawImage(v, 0, 0, w, h); } catch { return; }
+    this.upload(cv);
+  }
   dispose() { this.gl.deleteTexture(this.tex); }
 }
 
@@ -39,6 +51,7 @@ class VideoSource extends Base {
     });
     v.addEventListener('loadedmetadata', () => { if (this.lateSeek) this.seekLate(); });
     v.addEventListener('error', () => { this.error = true; });
+    this.kicks = 0; this.stuckAt = 0;
     this.setClip(clip);
   }
   loops() { const c = this.clip; return c.end !== 'hold' && c.end !== 'next'; }
@@ -69,7 +82,7 @@ class VideoSource extends Base {
    *  n'est pas à la sortie ; dès qu'elle y passe, elle joue en même temps que le mur. */
   frozen() { const e = this.eng; return !!(e.staging && this.clip.hold !== false && !(e.isLive && e.isLive(this.clip.id))); }
   start(t0) {
-    this.t0 = t0; this.held = false; this.endedSent = false;
+    this.t0 = t0; this.held = false; this.endedSent = false; this.stuckAt = 0; this.kicks = 0;
     const v = this.v;
     if (this.frozen()) { this.wasFrozen = true; v.pause(); try { v.currentTime = this.seg().a; } catch { /* pas encore chargée */ } return; }
     if (Date.now() - t0 > 400) { this.lateSeek = true; if (v.readyState >= 1) this.seekLate(); }   // fenêtre ouverte en cours de route, ou saut de position
@@ -94,7 +107,7 @@ class VideoSource extends Base {
     if (this.pausedAt) { if (!v.paused) { v.pause(); this.pausedByUs = true; } }
     else if (this.pausedByUs) { this.pausedByUs = false; this.play(); }
     if (v.readyState >= 2 && v.videoWidth) {
-      if (!this.ready || v.currentTime !== this.lastT) { this.upload(v); this.lastT = v.currentTime; }
+      if (!this.ready || v.currentTime !== this.lastT) { this.uploadVideo(v); this.lastT = v.currentTime; }
       this.w = v.videoWidth; this.h = v.videoHeight; this.ready = true;
       if (this.frozen()) return;
       const { a, b, cut } = this.seg();
@@ -102,7 +115,26 @@ class VideoSource extends Base {
         if (this.loops()) v.currentTime = a;
         else if (!v.paused) { v.pause(); this.held = true; if (this.clip.end === 'next' && !this.endedSent) { this.endedSent = true; this.eng.onEnded?.(this.clip.id); } }
       }
-      if (v.paused && !v.ended && !this.held && !this.pausedAt && this.eng.role === 'output' && !this.kick) { this.kick = true; this.play(); }
+      if (this.eng.role === 'output') this.watchdog(v);
+    }
+  }
+  /** Fenêtre de sortie : une vidéo qui doit jouer mais reste en pause, ou dont l'image ne bouge plus (décodeur bloqué, PC
+   *  saturé), est relancée — plusieurs fois s'il le faut, et c'est noté dans le journal (Aide → Ouvrir le dossier des journaux). */
+  watchdog(v) {
+    const now = performance.now();
+    if (this.held || this.pausedAt || v.ended || this.frozen()) { this.stuckAt = 0; return; }
+    if (v.paused) {                                                       // lecture refusée ou interrompue : on relance (au plus toutes les 1,5 s)
+      if (now - (this.kickAt || 0) > 1500) { this.kickAt = now; if (this.kicks++ >= 1) console.warn(`Vidéo « ${this.clip.name || this.clip.src} » en pause à la sortie : relance`); this.play(); }
+      return;
+    }
+    this.kicks = 0;
+    if (v.seeking || v.currentTime !== this.wT) { this.wT = v.currentTime; this.stuckAt = now; return; }
+    if (!this.stuckAt) { this.stuckAt = now; return; }
+    if (now - this.stuckAt > 2500 && now - (this.nudgeAt || 0) > 4000) {   // image figée depuis 2,5 s alors qu'elle joue : on la décoince
+      this.nudgeAt = now; this.stuckAt = now;
+      console.warn(`Vidéo « ${this.clip.name || this.clip.src} » figée à la sortie (${v.videoWidth}×${v.videoHeight}, état ${v.readyState}) : relance`);
+      try { v.currentTime = v.currentTime + 0.04; } catch { /* sans gravité */ }
+      this.play();
     }
   }
   /** Position de lecture 0..1 dans la portion lue (pour la barre de progression de la régie). */
