@@ -24,8 +24,6 @@ const icon = nativeImage.createFromPath(path.join(appRoot, 'build', 'icon.png'))
 
 app.setName('Régie LED');
 app.setAppUserModelId('ma.bennanievents.regieled');
-// La fenêtre de sortie doit avoir son PROPRE processus (voir openOutputWindow) : sans cette option, Chromium regroupe les fenêtres
-// d'un même site dans un seul processus, et tout ce que fait la régie (aperçus, fenêtre de confirmation) ralentit ou fige le mur.
 if (process.env.REGIE_LED_PROFILE) app.setPath('userData', process.env.REGIE_LED_PROFILE);   // essais : un 2e exemplaire à côté de l'application installée
 if (!app.requestSingleInstanceLock()) app.quit();
 
@@ -55,11 +53,40 @@ let settings = {};
 try { settings = JSON.parse(fs.readFileSync(settingsFile, 'utf8')); } catch { /* premier lancement */ }
 const saveSettings = () => { try { fs.writeFileSync(settingsFile, JSON.stringify(settings)); } catch (e) { log.warn('Réglages non enregistrés : ' + e.message); } };
 
+/* ---------- Mode d'affichage (menu Affichage) : sur certains PC Windows avec une télé en 2e écran, la sortie se fige alors que la
+ * régie continue (le Lecteur multimédia, lui, est fluide). Ces variantes du moteur d'affichage de Chromium se choisissent dans le
+ * menu et s'appliquent au redémarrage ; chacune est notée dans le journal. ---------- */
+const GFX_MODES = {
+  normal: { label: 'Normal (recommandé)', sw: [] },
+  nodcomp: { label: 'Compatibilité A : sans composition directe', sw: [['disable-direct-composition']] },
+  opengl: { label: 'Compatibilité B : moteur OpenGL', sw: [['use-angle', 'gl']] },
+  novsync: { label: 'Compatibilité C : sans synchronisation verticale', sw: [['disable-gpu-vsync']] },
+};
+const gfxMode = GFX_MODES[settings.gfx] ? settings.gfx : 'normal';
+for (const [k, v] of GFX_MODES[gfxMode].sw) v == null ? app.commandLine.appendSwitch(k) : app.commandLine.appendSwitch(k, v);
+// Windows : décodage des vidéos par le processeur, sauf si l'utilisateur rallume celui de la carte graphique (menu Affichage).
+// Constaté sur un Lenovo LOQ + télé Haier en 2e écran : avec le décodage par la carte graphique, la sortie se figeait plusieurs
+// secondes sur la télé (la régie continuait, le Lecteur multimédia restait fluide) ; avec le décodage par le processeur, tout est fluide.
+const hwDecode = () => (process.platform === 'win32' ? settings.hwDecode === true : true);
+if (!hwDecode()) app.commandLine.appendSwitch('disable-accelerated-video-decode');
+// Windows : Chromium arrête de dessiner une fenêtre qu'il croit cachée par d'autres ; sur un 2e écran, ce calcul peut se tromper
+// et figer la sortie. La régie n'en a pas besoin : on le coupe.
+if (process.platform === 'win32') app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+/** Plein écran de la sortie : 'fullscreen' (celui du système) ou 'borderless' (fenêtre sans bordure qui couvre l'écran, au premier plan). */
+const outFsMode = () => (settings.outFs === 'borderless' && process.platform !== 'darwin' ? 'borderless' : 'fullscreen');   // Mac : son plein écran simple suffit (et macOS garde la barre des menus au-dessus d'une fenêtre)
+
 let srv, regieWin = null, updater = null;
 const outputs = new Map();                                  // id de sortie ('main', …) → BrowserWindow
 const regieDisplay = () => (regieWin ? screen.getDisplayMatching(regieWin.getBounds()) : screen.getPrimaryDisplay());
-const isFs = w => w.isSimpleFullScreen() || w.isFullScreen();
-const setFs = (w, on) => (process.platform === 'darwin' ? w.setSimpleFullScreen(on) : w.setFullScreen(on));
+const isFs = w => (w.borderless ? !!w.borderlessOn : w.isSimpleFullScreen() || w.isFullScreen());
+function setFs(w, on) {
+  if (!w.borderless) return process.platform === 'darwin' ? w.setSimpleFullScreen(on) : w.setFullScreen(on);
+  // Fenêtre sans bordure : « plein écran » = elle couvre exactement son écran, au-dessus de tout (barre des tâches comprise).
+  const d = screen.getDisplayMatching(w.getBounds()).bounds;
+  w.borderlessOn = on;
+  if (on) { w.setAlwaysOnTop(true, 'screen-saver'); w.setBounds(d); }
+  else { w.setAlwaysOnTop(false); w.setBounds({ x: d.x + 80, y: d.y + 80, width: Math.min(1280, d.width - 160), height: Math.min(720, d.height - 160) }); }
+}
 
 /** Écran choisi pour chaque sortie (onglet Outputs, menu Sortie) : id d'écran, 'window' (fenêtre simple) ou absent (automatique). */
 settings.outputDisplays ||= {};
@@ -82,6 +109,7 @@ function outputOptions(disp) {
     webPreferences: { preload, contextIsolation: true, backgroundThrottling: false } };
   if (!disp) return { ...common, width: 1280, height: 720, x: 80, y: 80 };
   const b = disp.bounds;
+  if (outFsMode() === 'borderless') return { ...common, x: b.x, y: b.y, width: b.width, height: b.height, frame: false, resizable: false, thickFrame: false, enableLargerThanScreen: true };
   return { ...common, x: b.x, y: b.y, width: b.width, height: b.height, ...(process.platform === 'darwin' ? { simpleFullscreen: true } : { fullscreen: true }) };
 }
 /** window.open() depuis la régie : la sortie devient une vraie fenêtre plein écran ; les liens externes vont dans le navigateur. */
@@ -100,7 +128,8 @@ function openOutputWindow(url) {
   const outId = new URL(url).searchParams.get('out') || 'main';
   const old = outputs.get(outId);
   if (old && !old.isDestroyed()) { old.loadURL(url); old.show(); return; }   // déjà ouverte : rechargée sur place, au même endroit
-  const win = new BrowserWindow(outputOptions(displayFor(outId)));
+  const disp = displayFor(outId), win = new BrowserWindow(outputOptions(disp));
+  if (outFsMode() === 'borderless') { win.borderless = true; if (disp) setFs(win, true); }
   setupOutputWindow(win, outId);
   win.loadURL(url);
 }
@@ -115,6 +144,21 @@ function setupOutputWindow(win, outId) {
   win.on('responsive', () => log.info(`Sortie « ${outId} » : la fenêtre répond de nouveau`));
   log.info(`Sortie « ${outId} » ouverte (${win.getBounds().width}×${win.getBounds().height}${isFs(win) ? ', plein écran' : ''})`);
   refreshMenu();
+}
+/** Résolution ou mise à l'échelle d'un écran changée (Windows : Paramètres → Écran) : chaque sortie affichée sur cet écran
+ *  reprend toute sa surface. Sinon la fenêtre gardait l'ancienne taille et l'image était coupée ou décalée sur la télé. */
+function refitOutputs(displayId) {
+  for (const [outId, w] of outputs) {
+    if (!w || w.isDestroyed() || displayChoice(outId) === 'window') continue;          // « Fenêtre simple » : sa taille reste celle choisie à la main
+    const disp = screen.getAllDisplays().find(d => d.id === displayId);
+    if (!disp || (screen.getDisplayMatching(w.getBounds()).id !== displayId && displayFor(outId)?.id !== displayId)) continue;   // sortie sur un autre écran : rien à faire
+    const fs = isFs(w);
+    if (!fs && displayId === regieDisplay().id) continue;                            // simple fenêtre sur l'écran de la régie : on n'y touche pas
+    if (fs) setFs(w, false);
+    w.setBounds(disp.bounds);
+    if (fs) setFs(w, true);
+    log.info(`Écran ${disp.label || displayId} passé en ${disp.size.width}×${disp.size.height} (×${disp.scaleFactor}) : sortie « ${outId} » recalée`);
+  }
 }
 function moveOutput(outId = 'main') {
   const w = outputs.get(outId); if (!w || w.isDestroyed()) return;
@@ -220,6 +264,29 @@ const ctx = {
   outputOpen: () => [...outputs.values()].some(w => !w.isDestroyed()),
   openOutput: () => regieWin?.webContents.executeJavaScript('document.getElementById("open-out")?.click()').catch(() => {}),
   closeOutputs: () => { for (const w of outputs.values()) if (!w.isDestroyed()) w.close(); },
+  gfxModes: () => Object.entries(GFX_MODES).map(([id, m]) => ({ id, label: m.label })), gfxMode: () => settings.gfx || 'normal',
+  setGfxMode: id => {
+    if (!GFX_MODES[id] || id === (settings.gfx || 'normal')) return;
+    settings.gfx = id; saveSettings(); refreshMenu();
+    log.info(`Mode d'affichage choisi : ${GFX_MODES[id].label} (au prochain démarrage)`);
+    const r = dialog.showMessageBoxSync(regieWin, { type: 'question', buttons: ['Redémarrer maintenant', 'Plus tard'], defaultId: 0, cancelId: 1,
+      message: `Mode d'affichage : ${GFX_MODES[id].label}`, detail: 'Il s\'applique au redémarrage de la Régie LED (le show est enregistré).' });
+    if (r === 0) { for (const w of outputs.values()) if (!w.isDestroyed()) w.destroy(); app.relaunch(); app.quit(); }
+  },
+  hwDecode: () => hwDecode(),
+  setHwDecode: on => {
+    settings.hwDecode = !!on; saveSettings(); refreshMenu();
+    log.info(`Décodage vidéo choisi : ${on ? 'carte graphique' : 'processeur'} (au prochain démarrage)`);
+    const r = dialog.showMessageBoxSync(regieWin, { type: 'question', buttons: ['Redémarrer maintenant', 'Plus tard'], defaultId: 0, cancelId: 1,
+      message: `Décodage des vidéos : ${on ? 'par la carte graphique' : 'par le processeur (recommandé sous Windows)'}`, detail: 'Il s\'applique au redémarrage de la Régie LED (le show est enregistré).' });
+    if (r === 0) { for (const w of outputs.values()) if (!w.isDestroyed()) w.destroy(); app.relaunch(); app.quit(); }
+  },
+  outFs: () => outFsMode(),
+  setOutFs: mode => {
+    settings.outFs = mode === 'borderless' ? 'borderless' : 'fullscreen'; saveSettings(); refreshMenu();
+    log.info(`Plein écran de la sortie : ${settings.outFs}`);
+    for (const w of [...outputs.values()]) if (!w.isDestroyed()) { const url = w.webContents.getURL(); w.destroy(); openOutputWindow(url); }   // sorties ouvertes : rouvertes dans le nouveau mode
+  },
   toggleOutputFullscreen: () => { const w = outputs.get('main'); if (w && !w.isDestroyed()) setFs(w, !isFs(w)); },
   openMedia: () => shell.openPath(mediaDir), openData: () => shell.openPath(dataDir), openLogs: () => shell.openPath(app.getPath('logs')),
   reportBug: () => { const url = bugReportUrl({ version: app.getVersion(), packaged, logFile: log.transports.file.getFile().path, repoUrl: REPO_URL }); log.info('Signalement de bug : ouverture de GitHub (' + url.length + ' caractères)'); shell.openExternal(url); },
@@ -244,6 +311,7 @@ app.whenReady().then(async () => {
   try { srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 4410, trash }); }
   catch (e) { log.warn(`Port 4410 indisponible (${e.code || e.message}) : port libre au hasard, les réglages du navigateur ne seront pas conservés.`); srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0, trash }); }
   log.info(`Régie LED ${app.getVersion()} — serveur ${srv.url} — shows : ${dataDir} — médias : ${mediaDir}`);
+  log.info(`Mode d'affichage : ${GFX_MODES[gfxMode].label} ; décodage vidéo : ${hwDecode() ? 'carte graphique' : 'processeur'} ; plein écran de la sortie : ${outFsMode() === 'borderless' ? 'fenêtre sans bordure' : 'plein écran du système'}`);
   try { const g = app.getGPUFeatureStatus(); log.info(`Carte graphique : décodage vidéo ${g.video_decode}, WebGL2 ${g.webgl2}, composition ${g.gpu_compositing}`); } catch { /* sans gravité */ }
   if (rootMoved && settings.rootWarned !== userRoot) {             // prévenu une fois : les fichiers ne sont pas dans Documents
     settings.rootWarned = userRoot; saveSettings();
@@ -263,5 +331,6 @@ app.whenReady().then(async () => {
   } });
   refreshMenu();
   for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(ev, () => { refreshMenu(); regieWin?.webContents.send('regie:displays-changed'); });
+  screen.on('display-metrics-changed', (_e, d) => setTimeout(() => refitOutputs(d.id), 400));
   setTimeout(() => updater.check(false), 4000);
 }).catch(e => { log.error('Démarrage impossible : ' + (e.stack || e)); dialog.showErrorBox('Régie LED', 'Démarrage impossible : ' + e.message); app.quit(); });

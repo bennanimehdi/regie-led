@@ -231,6 +231,9 @@ Le **✕** rouge de chaque carte (sauf la MASTER) supprime la sortie, après con
 Chaque carte (et chaque sortie dans Réglages) a aussi son **écran** : dans l'application de bureau, la liste des écrans branchés
 (« Automatique », un écran précis ou « Fenêtre simple ») ; une sortie déjà ouverte y est déplacée tout de suite, et le choix est
 retenu par sortie (`reglages-bureau.json` → `outputDisplays`). Dans Chrome, après « Détecter les écrans ».
+Si la **résolution ou la mise à l'échelle d'un écran change** pendant qu'une sortie y est affichée (Windows : Paramètres → Écran),
+la sortie reprend toute la surface de l'écran (`refitOutputs`), au lieu de garder l'ancienne taille (image coupée sur la télé).
+Une « Fenêtre simple » et une fenêtre posée sur l'écran de la régie ne sont pas touchées.
 
 ## Coins libres dans la composition
 
@@ -344,6 +347,27 @@ bureau ajoute processeur, mémoire totale et chaleur (Mac). Un clic ouvre le dé
   image figée depuis 2,5 s est décoincée (petit saut de 0,04 s + relance). Chaque relance est notée dans le journal.
 - Le **journal** (Aide → Ouvrir le dossier des journaux → `main.log`) note aussi la carte graphique au démarrage (décodage vidéo
   matériel ou non), un plantage du processus graphique et une fenêtre de sortie qui ne répond plus.
+
+## Windows : sortie qui se fige sur la télé (modes d'affichage)
+
+Cas constaté (Lenovo LOQ, télé Haier en 2e écran) : la sortie se fige plusieurs secondes sur la télé alors que la régie continue,
+et la même vidéo est fluide dans le Lecteur multimédia. La régie calcule bien ses images, c'est leur présentation par Windows qui
+coince. Pour trouver la bonne combinaison sur un PC donné, sans recompiler :
+
+- **Cause trouvée sur ce PC : le décodage des vidéos par la carte graphique.** Avec `--disable-accelerated-video-decode`
+  (décodage par le processeur), la sortie est fluide sur la télé. C'est donc le **réglage par défaut sous Windows** ; le menu
+  **Affichage → Décoder les vidéos avec la carte graphique** le rallume (redémarre la régie, réglage `hwDecode`). Le Mac garde le
+  décodage par la carte graphique.
+
+- **Affichage → Mode d'affichage** (redémarre la régie) : Normal ; A = sans composition directe (`--disable-direct-composition`) ;
+  B = moteur OpenGL (`--use-angle=gl`) ; C = sans synchronisation verticale (`--disable-gpu-vsync`). Réglage `gfx` de
+  `reglages-bureau.json`.
+- **Sortie → Type de plein écran** (Windows) : plein écran du système, ou **fenêtre sans bordure** qui couvre l'écran au premier
+  plan (réglage `outFs`). Les sorties ouvertes sont rouvertes tout de suite dans le nouveau mode.
+- Toujours sous Windows : `CalculateNativeWinOcclusion` est coupé (Chromium peut croire à tort qu'une fenêtre du 2e écran est
+  cachée et arrêter de la dessiner).
+
+Le mode choisi est noté dans le journal au démarrage.
 
 ## Espace disque : pas de doublon, nettoyage
 

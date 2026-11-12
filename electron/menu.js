@@ -39,10 +39,17 @@ export function buildMenu(ctx) {
       { label: 'Fermer la sortie', accelerator: 'CmdOrCtrl+Shift+W', enabled: ctx.outputOpen(), click: () => ctx.closeOutputs() },
       { type: 'separator' },
       { label: 'Écran de la sortie', submenu: screens },
+      ...(mac ? [] : [{ label: 'Type de plein écran', submenu: [
+        { label: 'Plein écran du système (normal)', type: 'radio', checked: ctx.outFs() === 'fullscreen', click: () => ctx.setOutFs('fullscreen') },
+        { label: 'Fenêtre sans bordure (compatibilité)', type: 'radio', checked: ctx.outFs() === 'borderless', click: () => ctx.setOutFs('borderless') },
+      ] }]),
     ] },
     { label: 'Affichage', submenu: [
       { role: 'togglefullscreen', label: 'Régie en plein écran' },
       { role: 'resetZoom', label: 'Taille réelle' }, { role: 'zoomIn', label: 'Agrandir' }, { role: 'zoomOut', label: 'Réduire' },
+      { type: 'separator' },
+      ...(mac ? [] : [{ label: 'Décoder les vidéos avec la carte graphique (redémarre la régie)', type: 'checkbox', checked: ctx.hwDecode(), click: m => ctx.setHwDecode(m.checked) }]),
+      { label: 'Mode d\'affichage (redémarre la régie)', submenu: ctx.gfxModes().map(m => ({ label: m.label, type: 'radio', checked: ctx.gfxMode() === m.id, click: () => ctx.setGfxMode(m.id) })) },
       { type: 'separator' }, { role: 'toggleDevTools', label: 'Outils de développement' },
     ] },
     { label: 'Aide', submenu: [
