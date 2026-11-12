@@ -598,7 +598,9 @@ export function startServer(opts = {}) {
             return send(res, 200, { ok: true, ...(await pptLive(['open', path.join(PRES, name)])) });
           }
           if (!['next', 'prev', 'first', 'pos', 'stop', 'park'].includes(act)) return send(res, 400, { error: 'Commande inconnue' });
-          return send(res, 200, { ok: true, ...(await pptLive([act])) });
+          // Le fichier désigne LE diaporama à piloter : sinon (Windows) « suivant » visait le premier diaporama ouvert dans PowerPoint.
+          const name = presName(url.searchParams.get('file'));
+          return send(res, 200, { ok: true, ...(await pptLive(name && process.platform === 'win32' ? [act, path.join(PRES, name)] : [act])) });
         } catch (e) { return send(res, e.code || 500, { error: String(e.message || e) }); }
       }
 

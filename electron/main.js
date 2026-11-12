@@ -199,7 +199,13 @@ function preferredSource(sources) {
   if (!p || Date.now() > p.until) return null;
   const low = v => String(v || '').toLowerCase().normalize('NFC');
   const slideshow = s => /diaporama|slide ?show/i.test(s.name);
-  if (p.ppt) return sources.find(s => slideshow(s) && low(s.name).includes(low(p.ppt))) || sources.find(s => /diaporama powerpoint|powerpoint slide ?show/i.test(s.name)) || null;
+  if (p.ppt) {                                    // titre sans l'extension (« Diaporama PowerPoint - catalogue - … ») : on la retire
+    const want = low(p.ppt).replace(/\.(pptx?|ppsx?|pptm|key)$/, '');
+    const own = sources.find(s => slideshow(s) && low(s.name).includes(want));
+    if (own) return own;
+    const any = sources.filter(s => /diaporama powerpoint|powerpoint slide ?show/i.test(s.name));
+    return any.length === 1 ? any[0] : null;        // plusieurs diaporamas ouverts : on ne devine pas (fenêtre de choix)
+  }
   if (p.label) return sources.find(s => s.name === p.label) || null;
   return null;
 }
@@ -312,7 +318,11 @@ app.whenReady().then(async () => {
   catch (e) { log.warn(`Port 4410 indisponible (${e.code || e.message}) : port libre au hasard, les réglages du navigateur ne seront pas conservés.`); srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0, trash }); }
   log.info(`Régie LED ${app.getVersion()} — serveur ${srv.url} — shows : ${dataDir} — médias : ${mediaDir}`);
   log.info(`Mode d'affichage : ${GFX_MODES[gfxMode].label} ; décodage vidéo : ${hwDecode() ? 'carte graphique' : 'processeur'} ; plein écran de la sortie : ${outFsMode() === 'borderless' ? 'fenêtre sans bordure' : 'plein écran du système'}`);
-  try { const g = app.getGPUFeatureStatus(); log.info(`Carte graphique : décodage vidéo ${g.video_decode}, WebGL2 ${g.webgl2}, composition ${g.gpu_compositing}`); } catch { /* sans gravité */ }
+  // Lu une fois le processus graphique prêt : lu ici directement, l'état affichait « disabled_software » alors que la carte était active.
+  app.getGPUInfo('complete').then(info => {
+    const g = app.getGPUFeatureStatus(), dev = (info.gpuDevice || []).find(d => d.active) || info.gpuDevice?.[0];
+    log.info(`Carte graphique : ${dev ? `${dev.deviceString || dev.deviceId} (pilote ${dev.driverVersion || '?'})` : 'inconnue'} — décodage vidéo ${g.video_decode}, WebGL ${g.webgl}, composition ${g.gpu_compositing}`);
+  }).catch(e => log.warn('Carte graphique : état illisible (' + e.message + ')'));
   if (rootMoved && settings.rootWarned !== userRoot) {             // prévenu une fois : les fichiers ne sont pas dans Documents
     settings.rootWarned = userRoot; saveSettings();
     setTimeout(() => dialog.showMessageBox({ type: 'info', title: 'Régie LED', message: 'Shows et médias rangés dans « ' + userRoot + ' »',

@@ -345,7 +345,7 @@ bureau ajoute processeur, mémoire totale et chaleur (Mac). Un clic ouvre le dé
   Windows). Filet de sécurité : un envoi au moins toutes les 0,5 s.
 - Dans la **fenêtre de sortie**, une vidéo qui devrait jouer mais reste en pause est relancée (au plus toutes les 1,5 s), et une
   image figée depuis 2,5 s est décoincée (petit saut de 0,04 s + relance). Chaque relance est notée dans le journal.
-- Le **journal** (Aide → Ouvrir le dossier des journaux → `main.log`) note aussi la carte graphique au démarrage (décodage vidéo
+- Le **journal** (Aide → Ouvrir le dossier des journaux → `regie-led.log`) note aussi la carte graphique au démarrage (décodage vidéo
   matériel ou non), un plantage du processus graphique et une fenêtre de sortie qui ne répond plus.
 
 ## Windows : sortie qui se fige sur la télé (modes d'affichage)
@@ -429,7 +429,15 @@ Si le diaporama a été fermé : « Relancer le diaporama », puis « Reprendre 
 le diaporama **dans une fenêtre** (1280 × 768 points). Un clip « Fenêtre en direct » est créé ; il reste à cliquer
 **« Choisir la fenêtre à afficher »** et à désigner « Diaporama PowerPoint » dans la liste de Chrome (à refaire après un rechargement
 de la régie). Les boutons Précédent / Suivant du clip, ou les touches ← →, pilotent PowerPoint (`tools/pptlive.applescript` sur Mac,
-`tools/pptlive.ps1` sur Windows, par automation COM : même fonctionnement, fenêtre rangée sous le bord bas de l'écran, barre de titre rognée).
+`tools/pptlive.ps1` sur Windows, par automation COM, barre de titre rognée).
+
+**Windows (bêta 10)** : la fenêtre du diaporama n'est plus rangée sous le bord de l'écran — Windows ne la redessinait plus et la
+capture restait figée sur la 1re diapositive. Elle est posée **à l'écran, juste derrière la sortie plein écran** sur la TV (sans
+sortie sur un 2e écran : sous toutes les fenêtres de l'écran principal), en 1280 px de large en vrais pixels (à 300 %, Windows
+l'agrandissait à 3072 px). Les commandes Précédent / Suivant visent **le diaporama du clip** (nom de fichier) : avant, elles
+pilotaient le premier diaporama ouvert dans PowerPoint, un autre fichier si l'utilisateur en avait un ouvert. À la reprise de la
+capture, la fenêtre est retrouvée par son nom sans l'extension ; si plusieurs diaporamas sont ouverts et aucun ne correspond, la
+fenêtre de choix s'affiche au lieu de deviner.
 La barre de titre de la fenêtre est rognée automatiquement. À savoir : PowerPoint doit rester ouvert, sa fenêtre ne doit pas être
 réduite dans le Dock, la sortie reçoit la capture de la régie (directement, ou par un relais vidéo local — `js/relay.js`),
 et Chrome doit être autorisé dans Réglages Système → Confidentialité et sécurité → Enregistrement de l'écran.
