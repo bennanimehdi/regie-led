@@ -3632,10 +3632,20 @@ function loop(t) {
     else if (tab === 'mapping') mapping.frame();
     else if (tab === 'outputs') drawOutputsView();
   }
-  if (prepOn && engPrep && tab === 'regie') {
-    prep.beat0 = live.beat0; engPrep.audio = eng ? eng.audio : 0.5;
-    engPrep.setState(show, prep); engPrep.frame();
-    drawView('comp', $('#preview-prep'), engPrep);
+  if (prepOn && engPrep) {
+    // Préparation identique à la sortie (rien de nouveau préparé, même scène) : l'écran Préparation recopie l'image de l'écran Sortie
+    // au lieu de décoder une 2e fois les mêmes vidéos ; hors de l'onglet Régie, il ne décode rien du tout. Sous Windows, où les
+    // vidéos sont décodées par le processeur, chaque décodage en double coûtait cher (images perdues avec plusieurs vidéos 4K) et
+    // occupait une des 6 connexions vers le serveur local.
+    const same = eng && prepCue == null && (!live.sceneId || live.sceneId === show.sceneId) && !prepDiffers();
+    if (tab !== 'regie' || same) {
+      if (engPrep.sources.size) engPrep.reset();
+      if (tab === 'regie') drawView('comp', $('#preview-prep'), eng);
+    } else {
+      prep.beat0 = live.beat0; engPrep.audio = eng ? eng.audio : 0.5;
+      engPrep.setState(show, prep); engPrep.frame();
+      drawView('comp', $('#preview-prep'), engPrep);
+    }
   }
   micFrame(); vuFrame();
   const beat = (Date.now() - live.beat0) / 60000 * show.bpm;

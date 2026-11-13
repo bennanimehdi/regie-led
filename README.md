@@ -378,6 +378,9 @@ bureau ajoute processeur, mémoire totale et chaleur (Mac). Un clic ouvre le dé
 
 ## Vidéos lourdes (4K) : aperçus allégés, relance automatique
 
+- **Pas de décodage en double dans la régie** : quand la préparation est identique à la sortie (rien de nouveau préparé, même
+  scène), l'écran Préparation recopie l'image de l'écran Sortie au lieu de décoder une 2e fois les mêmes vidéos ; hors de l'onglet
+  Régie, il ne décode rien. Mesuré : 2 vidéos à la sortie → la régie en décodait 4, elle en décode 2.
 - **La fenêtre de sortie a son propre processus** (application de bureau) : elle est créée par `electron/main.js`
   (`openOutputWindow`), et non plus par `window.open`, qui la mettait dans le même processus que la régie. Avant, tout ce que
   faisait la régie (aperçus, fenêtre de confirmation) ralentissait la sortie (24 i/s au lieu de 60 sur un PC Windows) ou la figeait.
