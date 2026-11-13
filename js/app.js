@@ -3532,6 +3532,19 @@ function drawView(view, cv, other, zone, out) {
   cv.getContext('2d').drawImage(g, 0, g.height - h, w, h, 0, 0, w, h);
 }
 let slowT = 0;
+/** Mac : toutes les 10 s, tant qu'un PowerPoint en direct est préparé ou à la sortie, sa fenêtre est remise sous le bord de l'écran
+ *  si macOS l'a remontée (sinon le curseur de la souris qui passe dessus apparaît dans la capture : mur et écran retour).
+ *  Sans bruit : ni message, ni premier plan volé ; une minute de pause si PowerPoint ne répond pas (diaporama fermé). */
+let pptParkAt = 0;
+function pptKeepParked(now) {
+  if (now < pptParkAt || !/Mac/.test(navigator.platform)) return;
+  pptParkAt = now + 10000;
+  const ids = [...Object.values(live.layers || {}), ...(prepOn ? Object.values(prep.layers || {}) : [])].map(L => L?.clipId).filter(Boolean);
+  const c = ids.map(id => show.clips[id]).find(x => x?.ppt);
+  if (!c) return;
+  fetch('/api/ppt/cmd?do=park&file=' + encodeURIComponent(c.ppt), { method: 'POST' })
+    .then(r => { if (!r.ok) pptParkAt = Date.now() + 60000; }).catch(() => { pptParkAt = Date.now() + 60000; });
+}
 function loop(t) {
   engLive = eng;
   requestAnimationFrame(loop);
@@ -3565,6 +3578,7 @@ function loop(t) {
     slowT = t;
     updateOutStatus();
     if (t - (window.__healthT || 0) > 1000) { window.__healthT = t; healthUpdate(); }
+    pptKeepParked(Date.now());
     if (tab === 'outputs') for (const o of show.outputs) {             // état de chaque fenêtre de sortie
       const st = $(`#view-outputs [data-outst="${CSS.escape(o.id)}"]`), on = outIsOpen(o.id), card = st?.closest('.oc');
       if (st && st.textContent !== outputStatus(o)) st.textContent = outputStatus(o);

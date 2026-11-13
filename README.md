@@ -199,6 +199,11 @@ Le son sort **par la fenêtre de sortie** (jamais par la régie, qui reste muett
   pas pour une simple fenêtre. Le son d'un PowerPoint joué par PowerPoint sort donc directement de PowerPoint vers la sortie son du Mac,
   sans passer par la régie ni par ses vumètres. Pour le faire passer par la régie : capturer **l'écran entier** avec l'audio.
 
+**Sortie son qui disparaît** (télé débranchée ou éteinte, carte son retirée) : le son passe sur la sortie par défaut de l'ordinateur,
+puis revient sur celle choisie dès qu'elle réapparaît (`checkSink` dans la fenêtre de sortie, événement `devicechange`). Avant, la
+régie réessayait à chaque image : erreurs en boucle dans le journal et son coupé. L'application de bureau autorise aussi le son
+sans clic (`autoplay-policy=no-user-gesture-required`) : la fenêtre de sortie n'en reçoit jamais.
+
 ## Compte à rebours : démarre à l'envoi
 
 Comme une vidéo, un compte à rebours « en attente » (case cochée par défaut dans ses réglages) affiche son temps de départ dans
@@ -261,6 +266,8 @@ montre au conférencier ce qui le concerne, **en entier**.
 - **Fichiers « R »** : dans les réglages d'un clip, case **« Aussi sur l'écran retour »** (badge **R** dans la grille). Le dernier clip R
   lancé à la sortie s'affiche sur le retour en plein cadre, proportions gardées, **jamais découpé par les zones** (un PowerPoint étalé
   sur trois zones du mur arrive entier).
+- **Remplissage** : le retour suit le réglage « Remplissage » du clip (Cadrage) : « Ajuster » = entier avec bandes noires, « Étirer » =
+  tout l'écran, « Remplir » = tout l'écran, bords rognés.
 - **Chrono** : une horloge ou un compte à rebours R se pose **par-dessus**, dans un cadre que l'on **glisse sur l'aperçu de la sortie**
   (coin en bas à droite pour la taille). Il a son propre dessin à la taille du cadre, avec le même départ et la même pause que sur le mur.
 - **Affiche de repos** : quand aucun fichier R ne passe, le retour montre l'image ou la vidéo choisie dans la carte de la sortie
@@ -457,6 +464,11 @@ le diaporama **dans une fenêtre** (1280 × 768 points). Un clip « Fenêtre en 
 **« Choisir la fenêtre à afficher »** et à désigner « Diaporama PowerPoint » dans la liste de Chrome (à refaire après un rechargement
 de la régie). Les boutons Précédent / Suivant du clip, ou les touches ← →, pilotent PowerPoint (`tools/pptlive.applescript` sur Mac,
 `tools/pptlive.ps1` sur Windows, par automation COM, barre de titre rognée).
+
+**Mac : fenêtre du diaporama toujours rangée** : macOS remonte la fenêtre en plein écran quand elle passe devant ou qu'un écran est
+branché ; le curseur de la souris qui passait dessus apparaissait alors dans la capture. Chaque commande PowerPoint (suivant,
+précédent, position) la remet sous le bord bas de l'écran si elle a bougé, et la régie vérifie toutes les 10 s tant qu'un PowerPoint
+en direct est préparé ou à la sortie (`pptKeepParked`, sans voler le premier plan).
 
 **Mac : retour à la régie** : lancer le diaporama met PowerPoint devant ; le pilote remet ensuite **la Régie LED** devant (le
 serveur lui donne le chemin de l'application, `REGIE_FRONT_APP`). Avant, il activait Google Chrome, ce qui l'ouvrait pour rien

@@ -24,6 +24,9 @@ const icon = nativeImage.createFromPath(path.join(appRoot, 'build', 'icon.png'))
 
 app.setName('Régie LED');
 app.setAppUserModelId('ma.bennanievents.regieled');
+// Application de bureau : pas de « clic obligatoire » avant de jouer du son. La fenêtre de sortie ne reçoit jamais de clic, son
+// contexte audio (vumètres) restait suspendu, avec des erreurs AudioContext dans le journal, et une vidéo pouvait démarrer muette.
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 if (process.env.REGIE_LED_PROFILE) app.setPath('userData', process.env.REGIE_LED_PROFILE);   // essais : un 2e exemplaire à côté de l'application installée
 if (!app.requestSingleInstanceLock()) app.quit();
 

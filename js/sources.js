@@ -52,8 +52,13 @@ function applyAudio(src, v, clip) {
   const eng = src.eng, vol = eng.role === 'output' && !eng.silent && !eng.live?.mute ? Math.min(1, Math.max(0, +clip.volume || 0)) * Math.min(1, Math.max(0, src.gain ?? 1)) : 0;
   if (vol > 0 && !src.blocked) { if (v.muted) v.muted = false; if (Math.abs(v.volume - vol) > 0.005) v.volume = vol; }
   else if (!v.muted) v.muted = true;
-  const sink = eng.role === 'output' ? (eng.sinkId || '') : '';
-  if (v.setSinkId && src.sink !== sink) { src.sink = sink; v.setSinkId(sink).catch(() => { src.sink = ''; eng.sinkError = true; }); }
+  // Sortie son choisie absente (télé débranchée ou éteinte, carte son retirée) : sortie par défaut, jusqu'à son retour (eng.sinkOk,
+  // tenu par la fenêtre de sortie). Avant, un échec faisait réessayer à chaque image : erreurs en boucle et son coupé.
+  const sink = eng.role === 'output' && eng.sinkOk !== false ? (eng.sinkId || '') : '';
+  if (v.setSinkId && src.sink !== sink) {
+    src.sink = sink;
+    v.setSinkId(sink).catch(() => { eng.sinkError = true; if (sink) { eng.sinkOk = false; v.setSinkId('').catch(() => {}); } });
+  }
 }
 
 class VideoSource extends Base {

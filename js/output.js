@@ -22,9 +22,24 @@ document.body.prepend(eng.canvas);
 const bc = new BroadcastChannel('regie-led');
 let state = null;
 const me = () => (state ? outputById(state.show, outId) : null);
+/** La sortie son choisie dans les Réglages existe-t-elle encore ? Sinon le son passe sur la sortie par défaut, et revient dessus dès
+ *  qu'elle réapparaît (télé rallumée, câble rebranché). Sans autorisation micro, les identifiants sont masqués : on ne conclut rien. */
+async function checkSink() {
+  const want = eng?.sinkId;
+  if (!want || !navigator.mediaDevices?.enumerateDevices) { if (eng) eng.sinkOk = true; return; }
+  try {
+    const outs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput' && d.deviceId);
+    if (!outs.length) return;
+    const ok = outs.some(d => d.deviceId === want);
+    if (ok !== (eng.sinkOk !== false)) console.warn(ok ? 'Sortie son retrouvée : le son y revient.' : 'Sortie son choisie introuvable (débranchée ?) : son sur la sortie par défaut.');
+    eng.sinkOk = ok;
+  } catch { /* liste indisponible : on garde l'état actuel */ }
+}
+navigator.mediaDevices?.addEventListener?.('devicechange', checkSink);
 const apply = s => {
   if (!s?.show || !s.live) return;
-  state = s; eng.setState(s.show, s.live); eng.sinkId = s.show.audioOut || '';
+  state = s; eng.setState(s.show, s.live);
+  if (eng.sinkId !== (s.show.audioOut || '')) { eng.sinkId = s.show.audioOut || ''; eng.sinkOk = true; checkSink(); }
   const o = me(); eng.hideLayers = new Set(o?.hidden || []); eng.silent = !isMain;
   if (o && !isMain) document.title = 'Régie LED — ' + o.name;
 };

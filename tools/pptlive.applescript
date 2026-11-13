@@ -54,25 +54,7 @@ on run argv
 			try
 				set pointer type of ssView to slide show pointer always hidden
 			end try
-			if act is "open" or act is "park" then
-				try
-					set {px, py} to my parkTarget()
-					set left position of slide show window 1 to px
-					set top of slide show window 1 to py
-				end try
-				-- Lancer le diaporama met PowerPoint devant : on remet la régie devant, sinon la fenêtre PowerPoint s'affiche
-				-- par-dessus la sortie sur le 2e écran (en plein écran, la sortie est de toute façon seule sur son écran).
-				-- Application de bureau : le serveur donne son chemin (REGIE_FRONT_APP). Régie dans le navigateur : Chrome, mais
-				-- seulement s'il est déjà ouvert (avant, la ligne lançait Chrome même quand la régie était l'application de bureau).
-				try
-					set frontApp to system attribute "REGIE_FRONT_APP"
-					if frontApp is not "" then
-						do shell script "open -a " & quoted form of frontApp
-					else if application "Google Chrome" is running then
-						tell application "Google Chrome" to activate
-					end if
-				end try
-			else if act is "next" then
+			if act is "next" then
 				go to next slide ssView
 			else if act is "prev" then
 				go to previous slide ssView
@@ -81,6 +63,30 @@ on run argv
 			else if act is "stop" then
 				exit slide show ssView
 				return "0/0"
+			end if
+			-- Rangement sous le bord bas de l'écran, à l'ouverture ET à chaque commande : macOS remonte la fenêtre en plein écran
+			-- dès qu'elle passe devant ou qu'un écran est branché / débranché ; elle restait alors au milieu de l'écran, et le
+			-- curseur de la souris qui passait dessus apparaissait dans la capture (sur le mur et sur l'écran retour).
+			try
+				set {px, py} to my parkTarget()
+				set w to slide show window 1
+				if (((left position of w) - px) ^ 2 > 4) or (((top of w) - py) ^ 2 > 4) then
+					set left position of w to px
+					set top of w to py
+				end if
+			end try
+			-- Lancer le diaporama met PowerPoint devant : on remet la régie devant (seulement à l'ouverture : un simple rangement
+			-- ne doit pas voler le premier plan). Application de bureau : chemin donné par le serveur (REGIE_FRONT_APP) ; régie
+			-- dans le navigateur : Chrome, seulement s'il est déjà ouvert.
+			if act is "open" then
+				try
+					set frontApp to system attribute "REGIE_FRONT_APP"
+					if frontApp is not "" then
+						do shell script "open -a " & quoted form of frontApp
+					else if application "Google Chrome" is running then
+						tell application "Google Chrome" to activate
+					end if
+				end try
 			end if
 			set total to count of slides of (presentation of slide show window 1)
 			return ((current show position of ssView) as text) & "/" & total & "/" & ((height of slide show window 1) as integer)

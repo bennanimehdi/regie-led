@@ -586,9 +586,18 @@ export class Engine {
     // Le clip tel quel (sans zone, sans effet, sans cadrage de la composition) mais avec son rognage (barre de titre d'un PowerPoint…).
     const plain = c => ({ ...c, fit: 'stretch', scale: 1, x: 0, y: 0, rot: 0 });
     const aspect = (e, c) => (e.src.w * (1 - (+c.cropL || 0) - (+c.cropR || 0))) / Math.max(1, e.src.h * (1 - (+c.cropT || 0) - (+c.cropB || 0))) || 16 / 9;
-    // Contenu centré dans un cadre (bx, by en px depuis le bas à gauche), proportions gardées.
-    const fitIn = (e, c, bx, by, bw, bh) => {
-      const a = aspect(e, c); let vw = bw, vh = Math.round(bw / a);
+    // Contenu dans un cadre (bx, by en px depuis le bas à gauche). fill = le « Remplissage » du clip : 'contain' (entier, bandes
+    // noires), 'stretch' (étiré sur tout le cadre) ou 'cover' (tout le cadre, bords rognés) — le retour suit le réglage du clip.
+    const fitIn = (e, c, bx, by, bw, bh, fill = 'contain') => {
+      const a = aspect(e, c);
+      if (fill === 'stretch') { box(bx, by, bw, bh); return this.drawSource(e, plain(c), 1, NO_FX, env, null); }
+      if (fill === 'cover') {
+        const A = bw / Math.max(1, bh); let cl = +c.cropL || 0, cr = +c.cropR || 0, ct = +c.cropT || 0, cb = +c.cropB || 0;
+        if (a > A) { const x = (1 - cl - cr) * (1 - A / a) / 2; cl += x; cr += x; }          // plus large que l'écran : on rogne les côtés
+        else if (a < A) { const y = (1 - ct - cb) * (1 - a / A) / 2; ct += y; cb += y; }     // plus haut : on rogne en haut et en bas
+        box(bx, by, bw, bh); return this.drawSource(e, { ...plain(c), cropL: cl, cropR: cr, cropT: ct, cropB: cb }, 1, NO_FX, env, null);
+      }
+      let vw = bw, vh = Math.round(bw / a);
       if (vh > bh) { vh = bh; vw = Math.round(bh * a); }
       box(bx + Math.floor((bw - vw) / 2), by + Math.floor((bh - vh) / 2), Math.max(1, vw), Math.max(1, vh));
       this.drawSource(e, plain(c), 1, NO_FX, env, null);
@@ -596,7 +605,7 @@ export class Engine {
     const pick = this.retourPick(o);
     let main = pick.main && ready(pick.main), mainClip = main && show.clips[pick.main];
     if (!main) { const idle = this.retourIdle(o, now); if (idle && ready(null, idle)) { main = idle.e; mainClip = idle.clip; } }
-    if (main) fitIn(main, mainClip, 0, 0, w, h);
+    if (main) fitIn(main, mainClip, 0, 0, w, h, mainClip.fit === 'stretch' || mainClip.fit === 'cover' ? mainClip.fit : 'contain');
     const tc = pick.timer && show.clips[pick.timer.id];
     if (tc) {
       // Le chrono a son propre dessin, à la taille de son cadre : sur le mur il est dessiné à la taille de sa zone (il serait minuscule

@@ -433,7 +433,7 @@ export function startServer(opts = {}) {
     // Mac : REGIE_FRONT_APP = l'application de bureau à remettre devant après le lancement du diaporama (vide dans le navigateur).
     try { out = await (process.platform === 'darwin' ? run('osascript', [path.join(TOOLS, 'pptlive.applescript'), ...args], 110000, { REGIE_FRONT_APP: opts.frontApp || '' }) : runPs('pptlive.ps1', args, 110000)); }
     catch (e) {
-      console.warn(`PowerPoint « ${args[0]} » a échoué : ${String(e.stderr || e.message).trim().slice(0, 800)}`);   // erreur complète dans le journal
+      if (!/aucun diaporama/i.test(e.stderr)) console.warn(`PowerPoint « ${args[0]} » a échoué : ${String(e.stderr || e.message).trim().slice(0, 800)}`);   // erreur complète dans le journal (sauf « pas de diaporama », courant)
       if (/aucun diaporama/i.test(e.stderr)) throw Object.assign(new Error('Aucun diaporama en cours dans PowerPoint : clique sur « Relancer le diaporama ».'), { code: 409 });
       if (/-1743|not authorized|pas autoris/i.test(e.stderr)) throw new Error('macOS a bloqué le pilotage de PowerPoint. Ouvre Réglages Système → Confidentialité et sécurité → Automatisation, et autorise PowerPoint pour l\'application qui a lancé la régie.');
       if (/80040154|introuvable|Class not registered|-600|-10810/i.test(e.stderr)) throw new Error('PowerPoint est introuvable sur cet ordinateur : installe Microsoft PowerPoint pour jouer un diaporama en direct.');
