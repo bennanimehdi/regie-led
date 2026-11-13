@@ -102,8 +102,17 @@ body.resizing { cursor: col-resize; user-select: none; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; min-height: 0; }
 .panel-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--line); min-height: 42px; }
 .panel-h > div { display: flex; gap: 4px; }
+.zones-h { flex-wrap: wrap; row-gap: 6px; }
+.zone-content { padding: 8px 9px; margin-bottom: 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel2); }
+.zone-content .note { margin: 0 0 7px; }
 .empty { color: var(--mut); padding: 14px 12px; margin: 0; font-size: 12px; line-height: 1.55; }
 .note { color: var(--mut); font-size: 11.5px; line-height: 1.5; margin: 6px 0; }
+/* explications en bulles : commande soulignée en pointillé, bulle au survol */
+.has-hint { cursor: help; }
+.has-hint:is(h4, label, span), .has-hint > span:first-child { text-decoration: underline dotted color-mix(in srgb, var(--gold) 55%, transparent); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+#hint-tip { position: fixed; z-index: 300; max-width: 340px; padding: 9px 11px; border-radius: 8px; background: #23262e; border: 1px solid var(--line2);
+  color: var(--txt); font-size: 12px; line-height: 1.5; box-shadow: 0 8px 24px rgba(0,0,0,.55); pointer-events: none; }
+#hint-tip b { color: var(--gold); }
 
 /* ---------- médiathèque ---------- */
 .lib.drop { border-color: var(--gold); box-shadow: inset 0 0 0 2px rgba(240,180,41,.35); }

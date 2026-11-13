@@ -199,7 +199,7 @@ export function normalizeShow(s) {
   // mode : 'comp' (toute la composition), 'zone' (une zone en plein cadre) ou 'retour' (écran retour conférenciers : fichiers marqués
   // « retour » en entier + chrono placé à la main + affiche de repos). La sortie principale reste toujours en 'comp'.
   const normOut = (o, i) => ({ id: i === 0 ? 'main' : (o.id || uid()), name: String(o.name || (i === 0 ? 'LED principale' : 'Sortie ' + (i + 1))).slice(0, 40), mode: i > 0 && (o.mode === 'zone' || o.mode === 'retour') ? o.mode : 'comp', zoneId: typeof o.zoneId === 'string' ? o.zoneId : '', hidden: (Array.isArray(o.hidden) ? o.hidden : []).filter(id => allLayerIds.has(id)), screen: typeof o.screen === 'string' ? o.screen : '',
-    timer: normTimer(o.timer), idle: o.idle && typeof o.idle.src === 'string' && o.idle.src ? { src: o.idle.src, type: o.idle.type === 'video' ? 'video' : 'image', name: String(o.idle.name || '').slice(0, 120) } : null });
+    timer: normTimer(o.timer), idleFit: ['contain', 'cover', 'stretch'].includes(o.idleFit) ? o.idleFit : 'stretch', idle: o.idle && typeof o.idle.src === 'string' && o.idle.src ? { src: o.idle.src, type: o.idle.type === 'video' ? 'video' : 'image', name: String(o.idle.name || '').slice(0, 120) } : null });
   const outs = Array.isArray(show.outputs) ? show.outputs.filter(o => o && typeof o === 'object') : [];
   if (!outs.length || outs[0].id !== 'main') outs.unshift({ id: 'main', name: 'LED principale', ...(outs.find(o => o.id === 'main') || {}) });
   show.outputs = outs.filter((o, i, a) => i === 0 || (o.id !== 'main' && a.findIndex(x => x.id === o.id) === i)).map(normOut);

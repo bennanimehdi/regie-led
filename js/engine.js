@@ -604,8 +604,9 @@ export class Engine {
     };
     const pick = this.retourPick(o);
     let main = pick.main && ready(pick.main), mainClip = main && show.clips[pick.main];
-    if (!main) { const idle = this.retourIdle(o, now); if (idle && ready(null, idle)) { main = idle.e; mainClip = idle.clip; } }
-    if (main) fitIn(main, mainClip, 0, 0, w, h, mainClip.fit === 'stretch' || mainClip.fit === 'cover' ? mainClip.fit : 'contain');
+    let fill = mainClip && (mainClip.fit === 'stretch' || mainClip.fit === 'cover') ? mainClip.fit : 'contain';
+    if (!main) { const idle = this.retourIdle(o, now); if (idle && ready(null, idle)) { main = idle.e; mainClip = idle.clip; fill = o.idleFit || 'stretch'; } }   // affiche de repos : son propre remplissage
+    if (main) fitIn(main, mainClip, 0, 0, w, h, fill);
     const tc = pick.timer && show.clips[pick.timer.id];
     if (tc) {
       // Le chrono a son propre dessin, à la taille de son cadre : sur le mur il est dessiné à la taille de sa zone (il serait minuscule

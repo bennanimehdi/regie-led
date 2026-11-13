@@ -67,9 +67,13 @@ export function initMapping(ctx) {
         <span>${i + 1} · ${esc(x.name)}</span></li>`).join('');
     let f = '<p class="empty">Ajoute une zone par écran LED.</p>';
     if (z) {
+      const ls = ctx.layersOfZone(z.id);
+      // Calques de cette zone, en tête : on voit tout de suite si la zone a déjà son calque, et on l'ajoute d'un clic.
+      const contenu = `<div class="zone-content">${ls.length ? `<p class="note">Calque(s) affiché(s) ici : <b>${esc(ls.join(', '))}</b>.</p>` : '<p class="note">Pas encore de calque : cette zone montre la partie de l\'image qu\'elle découpe.</p>'}
+        <button class="btn sm${ls.length ? '' : ' gold'}" data-act="layer" title="Crée un calque dont tous les clips sont cadrés dans cette zone (un calque par écran, et chaque écran a son contenu)">＋ Calque pour cette zone</button></div>`;
       const b = quadBounds(z.dst);
       const n = (k, label, v) => `<label><span>${label}</span><input type="number" data-f="${k}" value="${Math.round(v)}"></label>`;
-      f = `<label class="f"><span>Nom</span><input type="text" data-f="name" value="${esc(z.name)}"></label>
+      f = `${contenu}<label class="f"><span>Nom</span><input type="text" data-f="name" value="${esc(z.name)}"></label>
         <label class="f"><span>Forme de l'écran</span><select data-f="shape">${shapeOptions(z).map(([v, t]) => `<option value="${v}"${(z.shape || 'rect') === v ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
         <p class="note">La forme masque ce qui dépasse de l'écran (cercle, losange en escalier, triangle…) et se voit dans la mire. Pour un écran carré simplement <b>tourné</b>, garde « Rectangle » et règle la rotation ci-dessous.</p>
         <h4>Dans la composition (px)</h4>
@@ -84,7 +88,7 @@ export function initMapping(ctx) {
         <details><summary>Taille exacte depuis le pitch LED</summary>
           <div class="quad4"><label><span>Pitch (mm)</span><input type="number" data-pitch step="0.01" min="0.5" max="40" value="${z.pitch || 3.9}" list="pitches"></label><label><span>Largeur (m)</span><input type="number" data-pw step="0.01" min="0.1" value="${z.pw || ''}" placeholder="ex. 5"></label><label><span>Hauteur (m)</span><input type="number" data-ph step="0.01" min="0.1" value="${z.ph || ''}" placeholder="ex. 3"></label><label><span>&nbsp;</span><button class="btn sm gold" data-act="pitch">Appliquer</button></label></div>
           <datalist id="pitches">${[1.5, 1.8, 1.9, 2.5, 2.6, 2.9, 3.9, 4.8, 5.9, 6.25, 8, 10].map(p => `<option value="${p}">`).join('')}</datalist>
-          <p class="note" data-pitch-info>${z.pitch && z.pw && z.ph ? `${z.pw} m × ${z.ph} m en P${z.pitch} = ${Math.round(z.pw * 1000 / z.pitch)} × ${Math.round(z.ph * 1000 / z.pitch)} px` : 'Pixels = taille (mm) ÷ pitch. Ex. : 5 m × 3 m en P3,9 → 1282 × 769 px.'} Ces pixels sont ceux du processeur : avec la sortie réglée à sa résolution, 1 px ici = 1 px sur le mur, quel que soit le pitch. Flèches du clavier = 1 px.</p>
+          <p class="note keep" data-pitch-info>${z.pitch && z.pw && z.ph ? `${z.pw} m × ${z.ph} m en P${z.pitch} = ${Math.round(z.pw * 1000 / z.pitch)} × ${Math.round(z.ph * 1000 / z.pitch)} px` : 'Pixels = taille (mm) ÷ pitch. Ex. : 5 m × 3 m en P3,9 → 1282 × 769 px.'} Ces pixels sont ceux du processeur : avec la sortie réglée à sa résolution, 1 px ici = 1 px sur le mur, quel que soit le pitch. Flèches du clavier = 1 px.</p>
         </details>
         ${s.customOut ? `<h4>Sur la sortie (px)</h4>
         <div class="quad4">${n('dst.x', 'X', b.x)}${n('dst.y', 'Y', b.y)}${n('dst.w', 'Largeur', b.w)}${n('dst.h', 'Hauteur', b.h)}</div>
@@ -96,12 +100,9 @@ export function initMapping(ctx) {
         </details>
         <div class="row"><button class="btn sm" data-act="align" title="Remet cette zone droite, au même endroit et à la même taille que dans la composition">Aligner sur la composition</button></div>` : '<p class="note">Sortie verrouillée : cette zone part vers le mur exactement là où elle est dans la composition. Pour la placer ailleurs dans le signal (processeur réglé autrement), coche « Sortie personnalisée » en haut.</p>'}
         <div class="row"><button class="btn sm" data-act="full">Plein cadre</button><button class="btn sm" data-act="dup">Dupliquer</button><button class="btn sm danger" data-act="del">Supprimer</button></div>
-        <h4>Contenu de cette zone</h4>
-        ${(() => { const ls = ctx.layersOfZone(z.id); return ls.length ? `<p class="note">Calque(s) affiché(s) ici : <b>${esc(ls.join(', '))}</b>. Dans l'onglet Régie, les clips lancés sur ce calque remplissent cette zone.</p>` : '<p class="note">Pour l\'instant cette zone montre simplement la partie de l\'image qu\'elle découpe.</p>'; })()}
-        <button class="btn sm gold" data-act="layer">＋ Calque pour cette zone</button>
-        <p class="note">Crée un calque dont tous les clips sont cadrés dans cette zone : un calque par écran, et chaque écran a son contenu.</p>`;
+`;
     }
-    $('#map-side').innerHTML = `<div class="panel-h"><h3>Zones</h3><button class="btn sm gold" data-act="add">＋ Zone</button></div>
+    $('#map-side').innerHTML = `<div class="panel-h zones-h"><h3>Zones</h3><div><button class="btn sm" data-act="add" title="Une zone seule : elle découpe une partie de l'image (une même vidéo étalée sur plusieurs écrans, zone pour une sortie secondaire…)">＋ Zone</button><button class="btn sm gold" data-act="add-layer" title="Une zone et son calque d'un coup : cet écran aura son propre contenu">＋ Zone + calque</button></div></div>
       <ul class="zone-list">${list}</ul><div class="fields">${f}
       <p class="note">Astuce : coche « Mire de réglage », puis règle chaque zone en regardant le vrai mur LED. Flèches du clavier = 1 px.</p></div>`;
   }
@@ -321,6 +322,7 @@ export function initMapping(ctx) {
       if (!act) return;
       const z = cur();
       if (act === 'add') { const n = newSlice(s); s.slices.push(n); pick(n.id); return changed(); }
+      if (act === 'add-layer') { const n = newSlice(s); s.slices.push(n); pick(n.id); changed(); ctx.addLayerForZone(n); renderSide(); return; }
       if (!z) return;
       if (act === 'layer') { ctx.addLayerForZone(z); renderSide(); return; }
       if (act === 'del') { s.slices.splice(s.slices.indexOf(z), 1); pick(s.slices[0]?.id || null); return changed(); }

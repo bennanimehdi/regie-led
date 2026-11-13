@@ -87,6 +87,9 @@ La fenêtre de sortie fait son propre rendu : si la régie est rechargée, l'éc
   « Taille réelle 1:1 », « Coins libres » pour un écran en biais, « Aligner sur la composition » pour tout remettre droit) —
   à n'utiliser que si le processeur attend un écran à un autre endroit du signal que dans l'image.
   La **mire de réglage** affiche le nom de chaque zone sur le vrai mur.
+  **Zone + calque d'un coup** : en haut du panneau, « ＋ Zone + calque » crée la zone et son calque ; « ＋ Zone » crée une zone
+  seule (une même vidéo étalée sur plusieurs écrans, plusieurs calques sur une zone, zone pour une sortie secondaire). Les calques
+  d'une zone sont rappelés en tête de ses réglages, avec « ＋ Calque pour cette zone ».
   **Un contenu différent par écran** : dans la zone, « ＋ Calque pour cette zone » crée un calque dont tous les clips
   sont cadrés dans cette zone (réglable aussi par calque ou par clip, champ « Affiché dans »). Un calque sans zone couvre toute l'image.
 - **Réglages** — nom du show (affiché aussi en haut, à côté des onglets), « Enregistrer sous… » (copie du show dans un fichier nommé,
@@ -285,10 +288,10 @@ montre au conférencier ce qui le concerne, **en entier**.
 - **Chrono** : une horloge ou un compte à rebours R se pose **par-dessus**, dans un cadre que l'on **glisse sur l'aperçu de la sortie**
   (coin en bas à droite pour la taille). Il a son propre dessin à la taille du cadre, avec le même départ et la même pause que sur le mur.
 - **Affiche de repos** : quand aucun fichier R ne passe, le retour montre l'image ou la vidéo choisie dans la carte de la sortie
-  (« Écran noir » sinon), même si elle n'est pas dans la grille.
+  (« Écran noir » sinon), même si elle n'est pas dans la grille. Son **Remplissage** se choisit juste en dessous (Étirer par défaut, Remplir, Ajuster).
 
 Réglages de la sortie dans le show : `mode: 'retour'`, `timer: {x, y, w, h}` (fractions de l'écran depuis le haut à gauche),
-`idle: {src, type, name}` ; sur le clip : `retour: true`. Rendu : `Engine.presentRetour` (`retourPick`, `retourIdle`).
+`idle: {src, type, name}`, `idleFit` ; sur le clip : `retour: true`. Rendu : `Engine.presentRetour` (`retourPick`, `retourIdle`).
 
 ## Plusieurs sorties (LED, retour conférenciers, autre salle)
 
@@ -529,10 +532,19 @@ choisir la fenêtre **avant** l'événement (le choix reste valable tant que la 
 ou désactiver ce sélecteur dans Chrome : `chrome://flags`, chercher « ScreenCaptureKit picker » (*Use ScreenCaptureKit picker for
 stream selection*), mettre sur **Disabled**, relancer Chrome — Chrome affiche alors son propre sélecteur, dans la fenêtre de la régie seulement.
 
+## Explications en bulles
+
+Les textes d'explication des panneaux (réglages d'un clip ou d'un calque, Mapping, Réglages, Outputs) sont masqués et s'affichent
+dans une **bulle au survol** de la commande qu'ils expliquent (soulignée en pointillé, curseur « ? »). Restent affichés : les états
+et avertissements (position d'un PowerPoint ou d'un document, calques d'une zone, pitch, « aucun raccourci », erreurs), les
+fenêtres de dialogue, et un texte seul dans son panneau (« Formats conseillés »). Mécanisme : `hintify` (app.js) sur les
+`p.note`, `p.note.keep` pour en garder un affiché.
+
 ## Raccourcis
 
 `Espace` séquence suivante · `Entrée` envoyer la préparation à la sortie · `1`…`9` lancer une colonne · `B` écran noir · `T` taper le tempo ·
 `F` plein écran (fenêtre de sortie) · flèches = déplacer une zone de mapping de 1 px (`Maj` = 10 px).
+`⌘ S` (Mac) / `Ctrl+S` (Windows) = clip sélectionné en « Étirer » ; une 2e fois, il revient à son remplissage d'avant (`fitPrev`).
 
 ## Code
 

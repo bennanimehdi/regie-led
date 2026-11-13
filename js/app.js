@@ -1011,6 +1011,44 @@ function vthumbHydrate(img) {
   vthumbWait.set(k, [img]); vthumbQueue.push({ src, t, k }); vthumbPump();
 }
 // Toute miniature qui apparaît (grille, médiathèque, listes) reçoit son image : depuis la mémoire, sinon fabriquée dans la file.
+/* ---------- explications en bulles ----------
+ * Les paragraphes d'explication (<p class="note">) des panneaux prenaient beaucoup de place : ils sont masqués et s'affichent dans
+ * une bulle au survol de la commande qu'ils expliquent (l'élément juste au-dessus : case, liste, bouton, titre), soulignée en
+ * pointillé. Restent visibles : les états et avertissements (note avec un id, .keep, dépôt du diaporama, calques d'une zone,
+ * pitch, liste des raccourcis) et tout ce qui est dans une fenêtre de dialogue. */
+const hintOf = new WeakMap();
+const HINT_KEEP = '.modal, .zone-content, .keys-list, .dict-banner';
+function hintify(root) {
+  if (!root.querySelectorAll) return;
+  const notes = root.matches?.('p.note') ? [root] : root.querySelectorAll('p.note');
+  for (const p of notes) {
+    if (p.dataset.hinted || p.id || p.classList.contains('keep') || p.classList.contains('ss-drop') || p.hasAttribute('data-pitch-info') || p.closest(HINT_KEEP)) continue;
+    let t = p.previousElementSibling;
+    while (t && (t.matches('p.note[data-hinted]') || t.tagName === 'BR')) t = t.previousElementSibling;
+    if (!t) { t = p.nextElementSibling; while (t && (t.matches('p.note') || t.tagName === 'BR')) t = t.nextElementSibling; }   // en tête de bloc : la commande juste en dessous
+    if (!t) continue;                                                     // seul dans son bloc (ex. « Formats conseillés ») : le texte reste affiché
+    p.dataset.hinted = '1'; p.hidden = true;
+    hintOf.set(t, (hintOf.has(t) ? hintOf.get(t) + '<br><br>' : '') + p.innerHTML);
+    t.classList.add('has-hint');
+  }
+}
+const hintTip = document.createElement('div');
+hintTip.id = 'hint-tip'; hintTip.hidden = true; document.body.append(hintTip);
+const hintHide = () => { hintTip.hidden = true; hintTip._for = null; };
+document.addEventListener('mouseover', e => {
+  const t = e.target.closest?.('.has-hint'), h = t && hintOf.get(t);
+  if (!h) return hintHide();
+  if (hintTip._for !== t) { hintTip._for = t; hintTip.innerHTML = h; }
+  hintTip.hidden = false;
+  const r = t.getBoundingClientRect(), tw = hintTip.offsetWidth, th = hintTip.offsetHeight;
+  const x = Math.max(8, Math.min(r.left, innerWidth - tw - 8)), below = r.bottom + 6 + th < innerHeight - 8;
+  hintTip.style.left = x + 'px'; hintTip.style.top = (below ? r.bottom + 6 : Math.max(8, r.top - th - 6)) + 'px';
+});
+document.addEventListener('scroll', hintHide, true);
+addEventListener('blur', hintHide);
+new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1) hintify(n); })
+  .observe(document.documentElement, { childList: true, subtree: true });
+hintify(document.body);
 new MutationObserver(ms => {
   for (const m of ms) for (const n of m.addedNodes) {
     if (n.nodeType !== 1) continue;
@@ -1765,7 +1803,7 @@ function clipInspector(c) {
   let h = `<div class="panel-h"><h3>${TYPE_NAME[c.type]}</h3><button class="btn sm gold" data-act="launch-sel">▶ Lancer</button></div><div class="fields">`;
   h += fText('clip', 'name', 'Nom', c.name, clipLabel({ ...c, name: '' }));
   h += fCheck('clip', 'retour', 'Aussi sur l\'écran retour (badge R)', c.retour, true);
-  if (c.retour && !show.outputs.some(o => o.mode === 'retour')) h += '<p class="note">Aucune sortie n\'est encore en « Retour conférenciers » : onglet Outputs → « ＋ Sortie », puis choisis ce mode.</p>';
+  if (c.retour && !show.outputs.some(o => o.mode === 'retour')) h += '<p class="note keep">Aucune sortie n\'est encore en « Retour conférenciers » : onglet Outputs → « ＋ Sortie », puis choisis ce mode.</p>';
   // Pause / reprise / recommencer, pour ce qui a une horloge : compte à rebours, bandeau, vidéo, diaporama, effet.
   if (c.type === 'video' || c.type === 'slideshow' || c.type === 'gen' || (c.type === 'text' && (c.mode === 'countdown' || c.scroll))) {
     const st = playState(c);
@@ -2464,6 +2502,15 @@ function setKey(k) {
   show.keys.push(k); commit();
 }
 /** Raccourcis d'origine de la régie : [codes, ce qu'ils font]. */
+/** Raccourci ⌘ S / Ctrl+S : « Étirer » sur le clip sélectionné, ou retour à son remplissage d'avant (gardé dans c.fitPrev). */
+function stretchToggle() {
+  const c = sel?.kind === 'clip' && show.clips[sel.id];
+  if (!c || !['video', 'image', 'slideshow', 'camera', 'screen', 'doc'].includes(c.type)) return toast('Sélectionne d\'abord un clip (image, vidéo, PowerPoint, document, caméra…) : ⌘ S / Ctrl+S le met en « Étirer ».');
+  if (c.fit !== 'stretch') { c.fitPrev = c.fit || 'contain'; c.fit = 'stretch'; }
+  else { c.fit = c.fitPrev && c.fitPrev !== 'stretch' ? c.fitPrev : 'contain'; delete c.fitPrev; }
+  commit(); renderInspector();
+  toast(`« ${clipLabel(c)} » : ${(M.FITS.find(f => f[0] === c.fit) || [, c.fit])[1]}${c.fit === 'stretch' ? ' (encore ⌘ S / Ctrl+S pour revenir)' : ''}`);
+}
 const BUILTIN_KEYS = [
   [['Space'], 'Séquence suivante (conducteur)'], [['Enter', 'NumpadEnter'], 'Envoyer la préparation à la sortie (et fermer une forme dessinée)'],
   [['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7', 'Digit8', 'Digit9'], 'Afficher la colonne de ce numéro (Maj : directement à la sortie)'],
@@ -2471,6 +2518,7 @@ const BUILTIN_KEYS = [
   [['Delete', 'Backspace'], 'Retirer les fichiers sélectionnés de la médiathèque ; pendant un dessin, enlever le dernier point'],
   [['ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'], 'Document ou PowerPoint : page précédente / suivante ; Mapping : déplacer la zone de 1 px (Maj : 10 px)'],
   [['ArrowUp', 'ArrowDown'], 'Mapping : déplacer la zone de 1 px (Maj : 10 px)'], [['KeyF'], 'Plein écran (dans la fenêtre de sortie)'],
+  [['KeyS'], '⌘ S (Mac) / Ctrl+S (Windows) : clip sélectionné en « Étirer » (encore une fois : remplissage d\'avant)'],
 ];
 const KB_ROWS = [
   [['Escape', 1.2], null, ['F1'], ['F2'], ['F3'], ['F4'], null, ['F5'], ['F6'], ['F7'], ['F8'], null, ['F9'], ['F10'], ['F11'], ['F12'], null, ['Home'], ['End'], ['PageUp'], ['PageDown']],
@@ -2509,7 +2557,7 @@ function keysPanel() {
   const rows = show.keys.map((k, i) => `<div class="key-row"><kbd>${esc(keyLabel(k))}</kbd><span>${esc(KEY_ACTIONS.find(a => a[0] === k.action)?.[1] || k.action)}${k.target ? ' — ' + esc(keyTargetLabel(k)) : ''}</span><small>${esc(keyScopeLabel(k))}</small><button class="x" data-key-del="${i}" title="Supprimer ce raccourci">✕</button></div>`).join('');
   const action = $('#key-action')?.value || 'clip', withScene = SCENE_ACTIONS.includes(action);
   const scene = withScene ? ($('#key-scene')?.value || show.sceneId) : '', targets = keyTargets(action, scene || show.sceneId);
-  return `<h4>Mes raccourcis</h4><div class="keys-list">${rows || '<p class="note">Aucun raccourci personnalisé pour l\'instant.</p>'}</div>
+  return `<h4>Mes raccourcis</h4><div class="keys-list">${rows || '<p class="note keep">Aucun raccourci personnalisé pour l\'instant.</p>'}</div>
     <div class="key-form"><select id="key-action">${KEY_ACTIONS.map(([v, t]) => `<option value="${v}"${v === action ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select>
       ${withScene && show.scenes.length > 1 ? `<select id="key-scene" title="Scène visée : le raccourci l'ouvre d'abord si une autre scène est ouverte">${show.scenes.map(s => `<option value="${s.id}"${scene === s.id ? ' selected' : ''}>de la scène « ${esc(s.name)} »</option>`).join('')}</select>` : ''}
       ${targets.length ? `<select id="key-target">${targets.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join('')}</select>` : ''}
@@ -2628,6 +2676,8 @@ function bindTop() {
     }
     const custom = keyFor(e);
     if (custom) { e.preventDefault(); runKey(custom, e); return; }
+    // ⌘ S (Mac) / Ctrl+S (Windows) : le clip sélectionné passe en « Étirer » ; une 2e fois, il revient à son remplissage d'avant.
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.code === 'KeyS') { e.preventDefault(); return stretchToggle(); }
     if (e.metaKey || e.ctrlKey) return;
     if (tab === 'mapping' && mapping.key(e)) return;
     if (e.altKey) return;
@@ -3265,6 +3315,7 @@ function renderSettings() {
       <div><kbd>Espace</kbd> Séquence suivante</div><div><kbd>Entrée</kbd> Envoyer la préparation à la sortie</div><div><kbd>1</kbd>…<kbd>9</kbd> Afficher une colonne (<kbd>Maj</kbd> : directement à la sortie)</div><div><kbd>B</kbd> Écran noir</div>
       <div><kbd>T</kbd> Taper le tempo</div><div><kbd>←</kbd> <kbd>→</kbd> PowerPoint en direct : précédent / suivant</div><div><kbd>Échap</kbd> Désélectionner</div><div><kbd>F</kbd> Plein écran (dans la fenêtre de sortie)</div>
       <div><kbd>←↑↓→</kbd> Mapping : déplacer la zone de 1 px (<kbd>Maj</kbd> = 10 px)</div>
+      <div><kbd>${/Mac/.test(navigator.platform) ? '⌘' : 'Ctrl'}</kbd> <kbd>S</kbd> Clip sélectionné en « Étirer » (encore une fois : remplissage d'avant)</div>
       <div id="keys-custom">${keysPanel()}</div></div></div>
     <div class="panel"><div class="panel-h"><h3>Espace disque</h3><button class="btn sm" data-act="storage-refresh" title="Recalculer">↻</button></div><div class="fields" id="storage-panel"><p class="note">Calcul en cours…</p></div></div>
     <div class="panel"><div class="panel-h"><h3>Formats conseillés</h3></div><div class="fields">
@@ -3300,6 +3351,7 @@ function retourFields(o) {
   const files = media.filter(m => m.type === 'image' || m.type === 'video'), cur = o.idle?.name || '';
   return `<div class="oc-f"><label class="oc-scr" title="Ce que voit le conférencier quand aucun fichier marqué « R » ne passe">Affiche de repos <select data-out-f="idle" data-out="${esc(o.id)}">
       <option value="">Écran noir</option>${files.map(m => `<option value="${esc(m.name)}"${m.name === cur ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label></div>
+    ${o.idle ? `<div class="oc-f"><label class="oc-scr" title="Comment l'affiche de repos remplit l'écran retour">Remplissage <select data-out-f="idleFit" data-out="${esc(o.id)}">${M.FITS.map(([v, l]) => `<option value="${v}"${(o.idleFit || 'stretch') === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label></div>` : ''}
     <p class="note oc-note">Coche <b>« Aussi sur l'écran retour »</b> dans les réglages d'un clip (badge <b>R</b> dans la grille) : PowerPoint, affiches,
       chrono… Le dernier lancé s'affiche ici <b>en entier</b>, jamais découpé par les zones ; un compte à rebours ou une horloge « R » se pose
       par-dessus, dans le cadre <b>⏱</b> à glisser sur l'aperçu (coin en bas à droite pour sa taille).</p>`;
@@ -3362,7 +3414,8 @@ function bindOutputsView() {
     if (!o) return;
     if (f === 'name') { o.name = t.value.trim().slice(0, 40) || o.name; t.value = o.name; renderGrid(); updatePlaying(); }
     if (f === 'mode') { setOutMode(o, t.value); commit(); return renderOutputsView(); }
-    if (f === 'idle') { const m = mediaAll.find(x => x.name === t.value); o.idle = m ? { src: m.url, type: m.type, name: m.name } : null; }
+    if (f === 'idle') { const m = mediaAll.find(x => x.name === t.value); o.idle = m ? { src: m.url, type: m.type, name: m.name } : null; commit(); return renderOutputsView(); }
+    if (f === 'idleFit') o.idleFit = ['contain', 'cover', 'stretch'].includes(t.value) ? t.value : 'stretch';
     commit();
   });
 }
@@ -3433,7 +3486,7 @@ let autoCleanDays = clampDays(localStorage.getItem('regieLed.autoCleanDays'), 90
 const daysList = '<datalist id="days-sugg">' + [7, 15, 30, 60, 90, 180, 365].map(d => `<option value="${d}">`).join('') + '</datalist>';
 async function loadStorage() {
   const el = $('#storage-panel'); if (!el) return;
-  try { storageInfo = await (await fetch('/api/storage')).json(); } catch { el.innerHTML = '<p class="note">Impossible de lire l\'espace disque (serveur local injoignable).</p>'; return; }
+  try { storageInfo = await (await fetch('/api/storage')).json(); } catch { el.innerHTML = '<p class="note keep">Impossible de lire l\'espace disque (serveur local injoignable).</p>'; return; }
   renderStorage();
 }
 function renderStorage() {
