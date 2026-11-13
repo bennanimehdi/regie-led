@@ -58,6 +58,7 @@ function safeName(raw) {
 
 
 /** Sert un fichier, avec prise en charge de Range (indispensable pour lire/chercher dans une vidéo). */
+const RANGE_CHUNK = process.env.REGIE_LED_RANGE_CHUNK != null ? (+process.env.REGIE_LED_RANGE_CHUNK || Infinity) : 4 * 1024 * 1024;   // 0 = sans découpage (essais)
 async function serveFile(req, res, file, cache) {
   let st;
   try { st = await fsp.stat(file); } catch { return send(res, 404, 'Introuvable', 'text/plain; charset=utf-8'); }
@@ -68,6 +69,11 @@ async function serveFile(req, res, file, cache) {
   if (m && (m[1] || m[2])) {
     let start = m[1] ? +m[1] : Math.max(0, st.size - +m[2]);
     let end = m[1] && m[2] ? Math.min(+m[2], st.size - 1) : st.size - 1;
+    // Vidéo / son demandés « jusqu'à la fin » : on répond par morceaux de 4 Mo. Sinon la réponse durait toute la lecture (le
+    // lecteur lit au rythme de la vidéo) et gardait une des 6 connexions que Chromium ouvre vers le serveur : avec 6 vidéos en
+    // cours (sortie + aperçus de la régie), la vidéo suivante du mur attendait sa place plus de 12 s (saccades de 3 à 6 s).
+    // Le lecteur demande simplement le morceau suivant ; chaque requête rend sa connexion en quelques millisecondes.
+    if (m[1] && !m[2] && /^(video|audio)\//.test(type)) end = Math.min(end, start + RANGE_CHUNK - 1);
     if (start > end || start >= st.size) { res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }); return res.end(); }
     res.writeHead(206, { ...head, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
     if (req.method === 'HEAD') return res.end();

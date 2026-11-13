@@ -951,7 +951,73 @@ function addClipsToGrid(clips, layerIdx) {
   return placed;
 }
 function addClipToGrid(clip, layerIdx) { addClipsToGrid([clip], layerIdx); }
-const thumbMedia = m => (m.type === 'image' ? `<img src="${esc(m.url)}" loading="lazy" draggable="false" alt="">` : `<video src="${esc(m.url)}#t=0.5" preload="metadata" muted playsinline></video>`);
+const thumbMedia = m => (m.type === 'image' ? `<img src="${esc(m.url)}" loading="lazy" draggable="false" alt="">` : vthumb(m.url, 0.5));
+/* ---------- miniatures des vidéos : des images fixes, fabriquées une seule fois ----------
+ * Avant, chaque miniature était un vrai lecteur <video>, recréé à chaque reconstruction de la grille ou de la médiathèque (à chaque
+ * clic). Avec une centaine de vidéos, Chromium n'ouvre que 6 connexions à la fois vers le serveur local : les miniatures restaient
+ * noires (en attente) puis réapparaissaient, et la fenêtre de sortie — qui passe par les mêmes connexions — attendait ses images
+ * vidéo plusieurs secondes : saccades de 3 à 6 s sur le mur (mesuré sous Windows : 33 miniatures bloquées, sortie > 12 s pour
+ * démarrer une vidéo). Maintenant : une image JPEG par (fichier, instant), fabriquée une vidéo à la fois, gardée en mémoire et dans
+ * le cache du navigateur (elle survit au redémarrage ; elle est refaite si le fichier change de taille). */
+const vthumb = (src, t) => `<img class="vthumb" data-vsrc="${esc(src)}" data-t="${+t || 0}" draggable="false" alt="">`;
+const vthumbMem = new Map(), vthumbWait = new Map(), vthumbQueue = [];   // clé → URL de l'image | 'err' ; clé → <img> en attente
+let vthumbBusy = 0;
+const vthumbCache = (async () => { try { return await caches.open('regie-vthumbs-v1'); } catch { return null; } })();
+async function vthumbMake(src, t) {
+  let size = '';
+  try { size = (await fetch(src, { method: 'HEAD' })).headers.get('content-length') || ''; } catch { /* sans gravité */ }
+  const key = `/__vthumb?src=${encodeURIComponent(src)}&t=${t}&n=${size}`, cache = await vthumbCache;
+  const hit = await cache?.match(key).catch(() => null);
+  if (hit) return URL.createObjectURL(await hit.blob());
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto';
+  const wait = (ev, ms = 10000) => new Promise((ok, ko) => {
+    const tm = setTimeout(() => ko(new Error('délai dépassé')), ms);
+    v.addEventListener(ev, () => { clearTimeout(tm); ok(); }, { once: true });
+    v.addEventListener('error', () => { clearTimeout(tm); ko(new Error(v.error?.message || 'illisible')); }, { once: true });
+  });
+  try {
+    v.src = src;
+    await wait('loadedmetadata');
+    const at = Math.min(Math.max(0, t), Math.max(0, (v.duration || 0) - 0.1));
+    if (at > 0) { const s = wait('seeked'); v.currentTime = at; await s; } else if (v.readyState < 2) await wait('loadeddata');
+    const W = 320, H = Math.max(1, Math.round(W * (v.videoHeight || 9) / (v.videoWidth || 16)));
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+    cv.getContext('2d').drawImage(v, 0, 0, W, H);
+    const blob = await new Promise(ok => cv.toBlob(ok, 'image/jpeg', 0.8));
+    if (!blob) throw new Error('image vide');
+    cache?.put(key, new Response(blob, { headers: { 'Content-Type': 'image/jpeg' } })).catch(() => {});
+    return URL.createObjectURL(blob);
+  } finally { v.removeAttribute('src'); v.load(); }                      // la connexion au serveur est rendue tout de suite
+}
+function vthumbApply(img) {
+  const u = vthumbMem.get(img.dataset.k);
+  if (u === 'err') img.classList.add('vthumb-err'); else if (u && img.getAttribute('src') !== u) img.src = u;
+}
+function vthumbPump() {
+  while (vthumbBusy < 1 && vthumbQueue.length) {                         // une seule vidéo à la fois : 1 connexion au plus
+    const { src, t, k } = vthumbQueue.shift(); vthumbBusy++;
+    vthumbMake(src, t).then(u => vthumbMem.set(k, u), e => { vthumbMem.set(k, 'err'); console.warn(`Miniature impossible pour « ${decodeURIComponent(src.split('/').pop())} » : ${e.message}`); })
+      .finally(() => { vthumbBusy--; for (const img of vthumbWait.get(k) || []) vthumbApply(img); vthumbWait.delete(k); vthumbPump(); });
+  }
+}
+function vthumbHydrate(img) {
+  const src = img.dataset.vsrc, t = +img.dataset.t || 0, k = src + '|' + t;
+  if (!src) return;
+  img.dataset.k = k;
+  if (vthumbMem.has(k)) return vthumbApply(img);
+  const w = vthumbWait.get(k);
+  if (w) return void w.push(img);
+  vthumbWait.set(k, [img]); vthumbQueue.push({ src, t, k }); vthumbPump();
+}
+// Toute miniature qui apparaît (grille, médiathèque, listes) reçoit son image : depuis la mémoire, sinon fabriquée dans la file.
+new MutationObserver(ms => {
+  for (const m of ms) for (const n of m.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    if (n.matches('img.vthumb')) vthumbHydrate(n);
+    for (const img of n.querySelectorAll('img.vthumb')) vthumbHydrate(img);
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
 /** Ligne de médiathèque d'un document à pages : un seul élément, dont on tourne les pages. */
 const docItem = d => `<div class="lib-item${libSel.has('doc:' + d.id) ? ' sel' : ''}" draggable="true" data-doc="${esc(d.id)}" title="Document à pages : glisse-moi sur une case ou une forme (ou double-clic). Coche pour sélectionner plusieurs fichiers.">
     <input type="checkbox" class="lib-ck" data-ck="${esc('doc:' + d.id)}"${libSel.has('doc:' + d.id) ? ' checked' : ''} title="Sélectionner">
@@ -1380,11 +1446,11 @@ function bindLib() {
 /* ---------- grille de clips ---------- */
 function thumb(c) {
   if (c.type === 'image') return `<img src="${esc(c.src)}" loading="lazy" draggable="false" alt="">`;
-  if (c.type === 'video') return `<video src="${esc(c.src)}#t=${+c.start > 0 ? +c.start : 0.5}" preload="metadata" muted playsinline></video>`;   // vignette = image du point de départ
+  if (c.type === 'video') return vthumb(c.src, +c.start > 0 ? +c.start : 0.5);   // vignette = image du point de départ (image fixe, voir vthumb)
   if (c.type === 'doc') return `<img src="${esc(docPageUrl(c.doc, c.page || 0))}" loading="lazy" draggable="false" alt="">`;
   if (c.type === 'slideshow') {
     const f = c.items?.[0];
-    return `<div class="th-ss">${f ? (f.type === 'image' ? `<img src="${esc(f.src)}" loading="lazy" draggable="false" alt="">` : `<video src="${esc(f.src)}#t=0.5" preload="metadata" muted playsinline></video>`) : ''}<span class="th-ss-n">${c.items?.length || 0}</span></div>`;
+    return `<div class="th-ss">${f ? (f.type === 'image' ? `<img src="${esc(f.src)}" loading="lazy" draggable="false" alt="">` : vthumb(f.src, 0.5)) : ''}<span class="th-ss-n">${c.items?.length || 0}</span></div>`;
   }
   if (c.type === 'gen') return `<div class="th-gen" style="background:linear-gradient(135deg, ${hex(c.colorA)}, ${hex(c.colorB)})"></div>`;
   if (c.type === 'text') return `<div class="th-text" style="color:${hex(c.color)}">${esc(c.mode === 'clock' ? '12:34' : c.mode === 'countdown' ? countdownStart(c) : String(c.text || '').slice(0, 40))}</div>`;
@@ -1934,7 +2000,7 @@ function vuFrame() {
 }
 /** La vignette d'une vidéo dans la grille montre l'image de son point de départ. */
 function refreshVideoThumb(c) {
-  for (const v of $$(`#grid .cell[data-clip="${c.id}"] video`)) v.src = c.src + '#t=' + (+c.start > 0 ? +c.start : 0.5);
+  for (const img of $$(`#grid .cell[data-clip="${c.id}"] img.vthumb`)) { img.dataset.t = +c.start > 0 ? +c.start : 0.5; img.removeAttribute('src'); vthumbHydrate(img); }
 }
 function scopeObj(s) {
   if (s === 'clip') return show.clips[sel?.id];

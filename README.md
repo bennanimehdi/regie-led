@@ -155,6 +155,20 @@ Avant, chaque lecture interrompue (recherche, boucle) laissait un fichier ouvert
 Windows refusait d'en ouvrir d'autres (« EMFILE: too many open files ») : vignettes noires, imports et enregistrements refusés.
 Les messages du serveur (PowerPoint, fichiers verrouillés) sont écrits dans le journal de l'application (`regie-led.log`).
 
+**Beaucoup de vidéos dans le show : miniatures noires et mur qui saccade (bêta 13).** Chromium n'ouvre que **6 connexions à la
+fois** vers le serveur local, pour toutes les fenêtres (régie et sorties). Deux choses les occupaient :
+- **les miniatures** : chaque miniature vidéo (grille, médiathèque) était un vrai lecteur `<video>`, recréé à chaque reconstruction
+  de la grille (chaque clic). Mesuré avec 33 vidéos dans la grille et 74 dans la médiathèque : 107 lecteurs, 495 recréés en 15 clics,
+  les 33 de la grille bloquées sans image. Elles sont maintenant des **images fixes** (`vthumb`) : une image JPEG par fichier et
+  instant de départ, fabriquée une vidéo à la fois, gardée en mémoire et dans le cache du navigateur (`regie-vthumbs-v1`, refaite
+  si la taille du fichier change). Plus aucun lecteur vidéo pour les miniatures. Un fichier illisible par Chromium (ex. `.mov` en
+  ProRes) reste sans image et est noté dans le journal (« Miniature impossible »).
+- **les vidéos en lecture** : une vidéo demandée « jusqu'à la fin » gardait sa connexion pendant toute la lecture. Avec 6 vidéos en
+  cours (sortie + aperçus), la vidéo suivante du mur attendait plus de 12 s, et une des 4 vidéos du mur ne démarrait jamais.
+  Le serveur répond maintenant par **morceaux de 4 Mo** (`RANGE_CHUNK` ; `REGIE_LED_RANGE_CHUNK=0` pour revenir à l'ancien
+  comportement en essai) : chaque requête rend sa connexion en quelques millisecondes. Mesuré : une vidéo démarre sur le mur en
+  0,2 à 0,8 s dans tous les cas.
+
 À chaque enregistrement, le serveur garde une copie datée dans `data/backups/show-AAAAMMJJ-HHMM.json` (une par minute au plus, les 60
 dernières), en plus de `data/show.json.bak` (l'état juste avant la dernière écriture). Pour revenir en arrière : arrêter la régie,
 copier la sauvegarde voulue sur `data/show.json`, relancer. Dernier recours si tout a été écrasé : la régie ouverte dans Chrome garde le
