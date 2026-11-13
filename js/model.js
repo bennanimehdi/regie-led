@@ -38,6 +38,15 @@ export function newLayer(name) {
 }
 
 const CLIP_BASE = { fit: 'cover', scale: 1, x: 0, y: 0, rot: 0, zone: '', cropL: 0, cropR: 0, cropT: 0, cropB: 0 };   // zone : '' = comme le calque, 'all' = toute l'image, sinon id de zone
+/** Horloge ou compte à rebours : sur un écran retour, il s'affiche par-dessus le visuel, à la place choisie. */
+export const isTimerClip = c => c?.type === 'text' && (c.mode === 'clock' || c.mode === 'countdown');
+/** Place du chrono sur un écran retour par défaut : en bas à droite (fractions de l'écran, depuis le haut à gauche). */
+export const RETOUR_TIMER = { x: 0.68, y: 0.76, w: 0.3, h: 0.2 };
+const normTimer = t => {
+  const n = (v, d, lo, hi) => (Number.isFinite(+v) ? Math.min(hi, Math.max(lo, +v)) : d);
+  const w = n(t?.w, RETOUR_TIMER.w, 0.05, 1), h = n(t?.h, RETOUR_TIMER.h, 0.05, 1);
+  return { x: n(t?.x, RETOUR_TIMER.x, 0, 1 - w), y: n(t?.y, RETOUR_TIMER.y, 0, 1 - h), w, h };
+};
 export function newClip(type, extra = {}) {
   const c = { id: uid(), type, name: '', ...CLIP_BASE };
   if (type === 'video') Object.assign(c, { src: '', end: 'loop', speed: 1, volume: 1, start: 0, stop: 0, hold: true });   // volume : son par la fenêtre de sortie (0 = muet) ; start/stop : portion lue (s, 0 = tout) ; hold : en préparation, figée sur `start` jusqu'à l'envoi
@@ -187,7 +196,10 @@ export function normalizeShow(s) {
   // Sorties : la principale (id 'main' = la LED, avec le mapping) + d'autres écrans (retour conférenciers, autre salle…).
   // Chaque sortie montre toute la composition ou une seule zone en plein cadre, sans les calques listés dans `hidden`.
   const allLayerIds = new Set(show.scenes.flatMap(sc => sc.layers.map(l => l.id)));
-  const normOut = (o, i) => ({ id: i === 0 ? 'main' : (o.id || uid()), name: String(o.name || (i === 0 ? 'LED principale' : 'Sortie ' + (i + 1))).slice(0, 40), mode: o.mode === 'zone' ? 'zone' : 'comp', zoneId: typeof o.zoneId === 'string' ? o.zoneId : '', hidden: (Array.isArray(o.hidden) ? o.hidden : []).filter(id => allLayerIds.has(id)), screen: typeof o.screen === 'string' ? o.screen : '' });
+  // mode : 'comp' (toute la composition), 'zone' (une zone en plein cadre) ou 'retour' (écran retour conférenciers : fichiers marqués
+  // « retour » en entier + chrono placé à la main + affiche de repos). La sortie principale reste toujours en 'comp'.
+  const normOut = (o, i) => ({ id: i === 0 ? 'main' : (o.id || uid()), name: String(o.name || (i === 0 ? 'LED principale' : 'Sortie ' + (i + 1))).slice(0, 40), mode: i > 0 && (o.mode === 'zone' || o.mode === 'retour') ? o.mode : 'comp', zoneId: typeof o.zoneId === 'string' ? o.zoneId : '', hidden: (Array.isArray(o.hidden) ? o.hidden : []).filter(id => allLayerIds.has(id)), screen: typeof o.screen === 'string' ? o.screen : '',
+    timer: normTimer(o.timer), idle: o.idle && typeof o.idle.src === 'string' && o.idle.src ? { src: o.idle.src, type: o.idle.type === 'video' ? 'video' : 'image', name: String(o.idle.name || '').slice(0, 120) } : null });
   const outs = Array.isArray(show.outputs) ? show.outputs.filter(o => o && typeof o === 'object') : [];
   if (!outs.length || outs[0].id !== 'main') outs.unshift({ id: 'main', name: 'LED principale', ...(outs.find(o => o.id === 'main') || {}) });
   show.outputs = outs.filter((o, i, a) => i === 0 || (o.id !== 'main' && a.findIndex(x => x.id === o.id) === i)).map(normOut);

@@ -32,6 +32,9 @@ log.transports.file.resolvePathFn = () => path.join(app.getPath('logs'), 'regie-
 log.transports.file.level = 'info';
 log.transports.console.level = packaged ? false : 'info';
 log.errorHandler.startCatching({ showDialog: false });
+// Les messages du serveur local (serve.js, même processus) vont aussi dans le journal : fichier PowerPoint verrouillé, erreur
+// complète d'une commande PowerPoint… Avant, ils ne sortaient que dans un terminal, invisible dans l'application installée.
+Object.assign(console, log.functions);
 
 /** Le dossier de données doit accepter l'écriture : sous Windows, « Documents » est souvent bloqué par la protection contre les
  *  ransomwares (accès contrôlé aux dossiers) ou redirigé vers OneDrive. On essaie Documents, puis le dossier personnel. */
@@ -314,8 +317,10 @@ app.whenReady().then(async () => {
   // Port fixe : l'adresse de la régie ne change pas d'un lancement à l'autre, donc le navigateur garde ses réglages (sources
   // en direct connues, largeur des panneaux, aimant…). Si le port est pris (autre instance, serveur de développement), on en prend un libre.
   const trash = p => shell.trashItem(p);                          // nettoyage de l'espace disque : vers la corbeille (récupérable)
-  try { srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 4410, trash }); }
-  catch (e) { log.warn(`Port 4410 indisponible (${e.code || e.message}) : port libre au hasard, les réglages du navigateur ne seront pas conservés.`); srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0, trash }); }
+  // Mac : l'application (« …/Regie LED.app ») que le pilote PowerPoint remet devant après avoir lancé le diaporama, au lieu de Chrome.
+  const frontApp = process.platform === 'darwin' ? path.resolve(process.execPath, '..', '..', '..') : '';
+  try { srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 4410, trash, frontApp }); }
+  catch (e) { log.warn(`Port 4410 indisponible (${e.code || e.message}) : port libre au hasard, les réglages du navigateur ne seront pas conservés.`); srv = await startServer({ root: appRoot, dataDir, mediaDir, toolsDir, port: 0, trash, frontApp }); }
   log.info(`Régie LED ${app.getVersion()} — serveur ${srv.url} — shows : ${dataDir} — médias : ${mediaDir}`);
   log.info(`Mode d'affichage : ${GFX_MODES[gfxMode].label} ; décodage vidéo : ${hwDecode() ? 'carte graphique' : 'processeur'} ; plein écran de la sortie : ${outFsMode() === 'borderless' ? 'fenêtre sans bordure' : 'plein écran du système'}`);
   // Lu une fois le processus graphique prêt : lu ici directement, l'état affichait « disabled_software » alors que la carte était active.

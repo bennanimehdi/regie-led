@@ -100,6 +100,7 @@ function loop() {
   const w = Math.max(2, Math.round(innerWidth * devicePixelRatio)), h = Math.max(2, Math.round(innerHeight * devicePixelRatio));
   if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
   eng.frame();
+  if (o?.mode === 'retour') return eng.presentRetour(w, h, o);              // écran retour : fichiers marqués « retour » en entier + chrono
   const zone = o?.mode === 'zone' && state.show.slices.find(z => z.id === o.zoneId);
   if (zone) eng.present('zone', w, h, { zone, fit: true }); else eng.present('comp', w, h, { fit: true });
 }

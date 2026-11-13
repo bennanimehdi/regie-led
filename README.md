@@ -144,6 +144,17 @@ stroboscope / pulsation au tempo (bouton **Tap**), réaction au son (bouton **Mi
 
 ## Sauvegardes du show
 
+**Le show n'est jamais écrasé par un show vide.** Si le serveur ne peut pas lire `show.json` (fichier verrouillé, « trop de fichiers
+ouverts »…), il le signale (erreur 503) au lieu de répondre « pas de show » ; la régie reprend alors la copie qu'elle garde à chaque
+modification (`localStorage`, `regieLed.state`) ou, sans copie, n'enregistre plus rien jusqu'au prochain démarrage. Un enregistrement
+qui échoue est réessayé toutes les 5 s (indicateur « Non enregistré ! ») ; si la régie est relancée entre-temps, sa copie, plus
+récente, passe devant celle du disque (`regieLed.unsaved`).
+
+**Fichiers ouverts** : le serveur referme chaque fichier vidéo même quand le lecteur interrompt sa lecture (`streamTo`, `pipeline`).
+Avant, chaque lecture interrompue (recherche, boucle) laissait un fichier ouvert ; au bout de quelques minutes de vidéos en boucle,
+Windows refusait d'en ouvrir d'autres (« EMFILE: too many open files ») : vignettes noires, imports et enregistrements refusés.
+Les messages du serveur (PowerPoint, fichiers verrouillés) sont écrits dans le journal de l'application (`regie-led.log`).
+
 À chaque enregistrement, le serveur garde une copie datée dans `data/backups/show-AAAAMMJJ-HHMM.json` (une par minute au plus, les 60
 dernières), en plus de `data/show.json.bak` (l'état juste avant la dernière écriture). Pour revenir en arrière : arrêter la régie,
 copier la sauvegarde voulue sur `data/show.json`, relancer. Dernier recours si tout a été écrasé : la régie ouverte dans Chrome garde le
@@ -241,6 +252,22 @@ Barre Formes (ou panneau d'une zone dans Mapping) → **« ⬚ Coins libres »**
 pour un écran en biais, en trapèze ou vu en perspective. Le contenu de la zone est déformé pour remplir le quadrilatère (homographie,
 dans le moteur `u_zq` côté composition et `u_sq` côté sortie), la sortie suit, et une sortie « zone en plein cadre » remet l'image
 droite. L'aimant cale chaque coin. Les 4 coins se règlent aussi au pixel dans le panneau de la zone. Re-cliquer redonne un rectangle.
+
+## Écran retour conférenciers
+
+Une sortie secondaire peut être en mode **« Retour conférenciers »** (onglet Outputs ou Réglages) : elle ne recopie pas le mur, elle
+montre au conférencier ce qui le concerne, **en entier**.
+
+- **Fichiers « R »** : dans les réglages d'un clip, case **« Aussi sur l'écran retour »** (badge **R** dans la grille). Le dernier clip R
+  lancé à la sortie s'affiche sur le retour en plein cadre, proportions gardées, **jamais découpé par les zones** (un PowerPoint étalé
+  sur trois zones du mur arrive entier).
+- **Chrono** : une horloge ou un compte à rebours R se pose **par-dessus**, dans un cadre que l'on **glisse sur l'aperçu de la sortie**
+  (coin en bas à droite pour la taille). Il a son propre dessin à la taille du cadre, avec le même départ et la même pause que sur le mur.
+- **Affiche de repos** : quand aucun fichier R ne passe, le retour montre l'image ou la vidéo choisie dans la carte de la sortie
+  (« Écran noir » sinon), même si elle n'est pas dans la grille.
+
+Réglages de la sortie dans le show : `mode: 'retour'`, `timer: {x, y, w, h}` (fractions de l'écran depuis le haut à gauche),
+`idle: {src, type, name}` ; sur le clip : `retour: true`. Rendu : `Engine.presentRetour` (`retourPick`, `retourIdle`).
 
 ## Plusieurs sorties (LED, retour conférenciers, autre salle)
 
@@ -430,6 +457,18 @@ le diaporama **dans une fenêtre** (1280 × 768 points). Un clip « Fenêtre en 
 **« Choisir la fenêtre à afficher »** et à désigner « Diaporama PowerPoint » dans la liste de Chrome (à refaire après un rechargement
 de la régie). Les boutons Précédent / Suivant du clip, ou les touches ← →, pilotent PowerPoint (`tools/pptlive.applescript` sur Mac,
 `tools/pptlive.ps1` sur Windows, par automation COM, barre de titre rognée).
+
+**Mac : retour à la régie** : lancer le diaporama met PowerPoint devant ; le pilote remet ensuite **la Régie LED** devant (le
+serveur lui donne le chemin de l'application, `REGIE_FRONT_APP`). Avant, il activait Google Chrome, ce qui l'ouvrait pour rien
+depuis l'application de bureau. Dans le navigateur, Chrome n'est remis devant que s'il est déjà ouvert.
+
+**Diapositives qui ne sont pas en 16:9** (A4, 4:3…) : PowerPoint ajoute des bandes noires dans sa fenêtre. La régie lit le format
+des diapositives dans le fichier (`ppt/presentation.xml`, `<p:sldSz>`) et rogne ces bandes automatiquement à l'ouverture et à
+« Relancer le diaporama » (`cropL`/`cropR`, ou haut/bas pour une diapositive plus large) : « Étirer » remplit alors toute la sortie.
+
+**Réimporter un PowerPoint** : si le même fichier est déjà dans la régie, il est réutilisé tel quel (aucune erreur même s'il est
+ouvert dans PowerPoint). Une nouvelle version remplace l'ancienne ; si Windows refuse le remplacement (fichier ouvert dans
+PowerPoint ou synchronisé par OneDrive : « EPERM … rename »), la régie réessaie un instant puis l'enregistre sous « nom (2).pptx ».
 
 **Windows (bêta 10)** : la fenêtre du diaporama n'est plus rangée sous le bord de l'écran — Windows ne la redessinait plus et la
 capture restait figée sur la 1re diapositive. Elle est posée **à l'écran, juste derrière la sortie plein écran** sur la TV (sans

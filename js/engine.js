@@ -6,7 +6,7 @@
  *   3. present('comp')   affiche la composition telle quelle (aperçu) ;
  *      present('output') découpe la composition en zones et pose chaque zone sur la sortie HDMI (mapping).
  */
-import { hexToRgb, sliceMatrix, SHAPE_INDEX, shapePoints, shapeGroups, validPoly, fullQuad, zoneQuad, zonePoint, squareToQuad } from './model.js';
+import { hexToRgb, sliceMatrix, SHAPE_INDEX, shapePoints, shapeGroups, validPoly, fullQuad, zoneQuad, zonePoint, squareToQuad, newClip, isTimerClip, RETOUR_TIMER } from './model.js';
 import { createSource, sourceSig } from './sources.js';
 
 const VERT = `#version 300 es
@@ -231,8 +231,8 @@ export class Engine {
     this.mire.sig = '';
   }
 
-  source(clipId, now) {
-    const clip = this.show.clips[clipId];
+  source(clipId, now, clipObj) {
+    const clip = clipObj || this.show.clips[clipId];
     if (!clip) return null;
     const sig = sourceSig(clip);
     let e = this.sources.get(clipId);
@@ -531,6 +531,88 @@ export class Engine {
         gl.uniform1i(u.u_shape, z.shape === 'libre' ? (mask ? 6 : 0) : (SHAPE_INDEX[z.shape] || 0));
         this.bindMask(u, mask); this.srcQuad(u, z);
         this.quad();
+      }
+    }
+    gl.disable(gl.SCISSOR_TEST);
+  }
+
+  /** Écran retour (sortie en mode « retour ») : quels clips montrer. Le visuel = le clip marqué « retour » lancé en dernier à la
+   *  sortie (PowerPoint, affiche, vidéo…), sinon l'affiche de repos de cette sortie ; le chrono = l'horloge ou le compte à rebours
+   *  marqué « retour » lancé en dernier. Ne dépend ni des zones ni des calques : le conférencier voit le fichier en entier. */
+  retourPick(o) {
+    const { show } = this;
+    let main = null, timer = null;
+    for (const layer of this.layers()) {
+      const rt = this.rt[layer.id], id = rt?.cur?.clipId, c = id && show.clips[id];
+      if (!c?.retour) continue;
+      const t0 = +rt.t0 || 0;
+      if (isTimerClip(c)) { if (!timer || t0 >= timer.t0) timer = { id, t0, pausedAt: +(this.live.layers?.[layer.id]?.pausedAt) || 0 }; }
+      else if (!main || t0 >= main.t0) main = { id, t0 };
+    }
+    return { main: main?.id || null, timer: timer || null };
+  }
+  /** Affiche de repos d'un écran retour : un fichier de la médiathèque, joué par une source à part (il n'est pas dans la grille). */
+  retourIdle(o, now) {
+    const f = o.idle;
+    if (!f?.src) return null;
+    const id = 'retour-idle:' + o.id, sig = f.type + '|' + f.src;
+    let c = this.idleClips?.[id];
+    if (!c || c.sig !== sig) {
+      c = Object.assign(newClip(f.type === 'video' ? 'video' : 'image', { src: f.src, name: f.name || '', fit: 'contain' }), { id, sig });
+      if (c.type === 'video') { c.volume = 0; c.hold = false; }
+      (this.idleClips ||= {})[id] = c;
+    }
+    const fresh = !this.sources.has(id), e = this.source(id, now, c);
+    if (e && fresh) e.src.start(now);                                     // une vidéo de repos démarre (et boucle) dès qu'elle paraît
+    return e ? { e, clip: c } : null;
+  }
+  /** Dessine un écran retour (w×h px, coin bas-gauche du canvas) : le visuel entier, proportions gardées, puis le chrono à la place
+   *  choisie (o.timer = {x, y, w, h}, fractions de l'écran, depuis le haut à gauche). À appeler après frame(). */
+  presentRetour(w, h, o) {
+    if (!this.show || this.lost || !this.compT) return;
+    const gl = this.gl, { show, live } = this, now = Date.now();
+    if (live.test) return this.present('comp', w, h, { fit: true });         // mire : comme les autres sorties
+    const env = { beat: (now - (live.beat0 || 0)) / 60000 * (show.bpm || 120), audio: this.audio };
+    const ready = (id, clipObj) => {
+      const e = clipObj ? clipObj.e : this.source(id, now);
+      if (e && e.stamp !== this.stamp) { e.stamp = this.stamp; e.src.update(now, env, w, h); }
+      return e?.src.ready && e.src.w ? e : null;
+    };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    gl.enable(gl.SCISSOR_TEST); gl.scissor(0, 0, w, h);
+    gl.disable(gl.BLEND); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const box = (x, y, bw, bh) => { gl.viewport(x, y, bw, bh); gl.scissor(x, y, bw, bh); };
+    // Le clip tel quel (sans zone, sans effet, sans cadrage de la composition) mais avec son rognage (barre de titre d'un PowerPoint…).
+    const plain = c => ({ ...c, fit: 'stretch', scale: 1, x: 0, y: 0, rot: 0 });
+    const aspect = (e, c) => (e.src.w * (1 - (+c.cropL || 0) - (+c.cropR || 0))) / Math.max(1, e.src.h * (1 - (+c.cropT || 0) - (+c.cropB || 0))) || 16 / 9;
+    // Contenu centré dans un cadre (bx, by en px depuis le bas à gauche), proportions gardées.
+    const fitIn = (e, c, bx, by, bw, bh) => {
+      const a = aspect(e, c); let vw = bw, vh = Math.round(bw / a);
+      if (vh > bh) { vh = bh; vw = Math.round(bh * a); }
+      box(bx + Math.floor((bw - vw) / 2), by + Math.floor((bh - vh) / 2), Math.max(1, vw), Math.max(1, vh));
+      this.drawSource(e, plain(c), 1, NO_FX, env, null);
+    };
+    const pick = this.retourPick(o);
+    let main = pick.main && ready(pick.main), mainClip = main && show.clips[pick.main];
+    if (!main) { const idle = this.retourIdle(o, now); if (idle && ready(null, idle)) { main = idle.e; mainClip = idle.clip; } }
+    if (main) fitIn(main, mainClip, 0, 0, w, h);
+    const tc = pick.timer && show.clips[pick.timer.id];
+    if (tc) {
+      // Le chrono a son propre dessin, à la taille de son cadre : sur le mur il est dessiné à la taille de sa zone (il serait minuscule
+      // dans le cadre). Même départ et même pause que celui de la sortie : il affiche exactement le même temps.
+      const p = o.timer || RETOUR_TIMER, bw = Math.max(8, Math.round(p.w * w)), bh = Math.max(8, Math.round(p.h * h));
+      const copy = { ...tc, id: 'retour-timer:' + o.id, size: 84, align: 'center', valign: 'middle', scroll: false };
+      const e = this.source(copy.id, now, copy);
+      if (e) {
+        if (e.retourT0 !== pick.timer.t0) { e.retourT0 = pick.timer.t0; e.src.start(pick.timer.t0); }
+        e.src.pausedAt = pick.timer.pausedAt;
+        e.stamp = this.stamp; e.src.update(now, env, bw, bh);
+        if (e.src.ready || e.src.w) {
+          gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+          fitIn(e, copy, Math.round(p.x * w), h - Math.round(p.y * h) - bh, bw, bh);
+          gl.disable(gl.BLEND);
+        }
       }
     }
     gl.disable(gl.SCISSOR_TEST);

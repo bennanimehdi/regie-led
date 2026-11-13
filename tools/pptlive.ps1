@@ -138,5 +138,6 @@ try {
   }
   Write-Output ("{0}/{1}/{2}/{3}" -f $view.CurrentShowPosition, $total, $h, $cap)
 } catch {
-  Fail $_.Exception.Message
+  # La ligne fautive du script, pour le journal de la régie (l'erreur seule ne dit pas où elle s'est produite).
+  Fail ("{0} [commande {1}, ligne {2}]" -f $_.Exception.Message, $Act, $_.InvocationInfo.ScriptLineNumber)
 }

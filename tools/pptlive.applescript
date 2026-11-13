@@ -60,10 +60,17 @@ on run argv
 					set left position of slide show window 1 to px
 					set top of slide show window 1 to py
 				end try
-				-- Lancer le diaporama met PowerPoint devant : on repasse Chrome devant, sinon la fenêtre PowerPoint
-				-- s'affiche par-dessus la sortie sur le 2e écran (en plein écran, la sortie est de toute façon seule sur son écran).
+				-- Lancer le diaporama met PowerPoint devant : on remet la régie devant, sinon la fenêtre PowerPoint s'affiche
+				-- par-dessus la sortie sur le 2e écran (en plein écran, la sortie est de toute façon seule sur son écran).
+				-- Application de bureau : le serveur donne son chemin (REGIE_FRONT_APP). Régie dans le navigateur : Chrome, mais
+				-- seulement s'il est déjà ouvert (avant, la ligne lançait Chrome même quand la régie était l'application de bureau).
 				try
-					tell application "Google Chrome" to activate
+					set frontApp to system attribute "REGIE_FRONT_APP"
+					if frontApp is not "" then
+						do shell script "open -a " & quoted form of frontApp
+					else if application "Google Chrome" is running then
+						tell application "Google Chrome" to activate
+					end if
 				end try
 			else if act is "next" then
 				go to next slide ssView

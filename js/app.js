@@ -67,14 +67,23 @@ function push() {
     try { localStorage.setItem('regieLed.state', JSON.stringify({ show, live })); } catch { /* stockage plein : sans gravité */ }
   }, 300);
 }
+/** Show pas chargé depuis le serveur (lecture impossible) et aucune copie locale : on n'enregistre RIEN, pour ne jamais écraser le
+ *  vrai show par un show vide. Levé dès qu'un enregistrement d'un show chargé correctement est possible (rechargement de la régie). */
+let saveBlocked = false;
+const UNSAVED_KEY = 'regieLed.unsaved';     // « 1 » tant que le dernier enregistrement a échoué : la copie locale est plus récente
 async function saveShow() {
+  if (saveBlocked) { $('#save-state').textContent = 'Non enregistré !'; return; }
+  clearTimeout(saveT);
   try {
     const r = await fetch('/api/show', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(show) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     $('#save-state').textContent = 'Enregistré';
+    try { localStorage.removeItem(UNSAVED_KEY); } catch { /* sans gravité */ }
   } catch {
     $('#save-state').textContent = 'Non enregistré !';
-    toast('Impossible d\'enregistrer le show : le serveur local est-il toujours lancé ?', 'err');
+    try { localStorage.setItem(UNSAVED_KEY, '1'); localStorage.setItem('regieLed.state', JSON.stringify({ show, live })); } catch { /* stockage plein */ }
+    toast('Impossible d\'enregistrer le show pour l\'instant : nouvel essai toutes les 5 secondes (ton travail est gardé dans la régie).', 'err');
+    saveT = setTimeout(saveShow, 5000);                       // nouvel essai jusqu'à ce que le serveur réponde
   }
 }
 function restoreLive() {
@@ -805,7 +814,7 @@ async function pptCmd(clip, act) {
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'Commande refusée');
     pptState[clip.ppt] = { pos: j.pos, total: j.total };
-    if (act === 'open') { clip.cropT = j.cropT; clip.cropB = j.cropB; commit(); }
+    if (act === 'open') { clip.cropT = j.cropT; clip.cropB = j.cropB; clip.cropL = j.cropL || 0; clip.cropR = j.cropR || 0; commit(); }   // bandes noires d'une diapositive A4 / 4:3 comprises
     const el = $('#ppt-pos');
     if (el && sel?.kind === 'clip' && sel.id === clip.id) el.textContent = pptLabel(clip);
   } catch (e) { toast(e.message, 'err'); }
@@ -828,7 +837,7 @@ function importPptLive(file) {
       pptState[r.file] = { pos: r.pos, total: r.total };
       addFiles(['ppt:' + r.file]);
       loadMedia().then(renderLib);                       // le PowerPoint apparaît aussi dans la médiathèque
-      const clip = M.newClip('screen', { name: baseName(file.name), ppt: r.file, cropT: r.cropT, cropB: r.cropB });
+      const clip = M.newClip('screen', { name: baseName(file.name), ppt: r.file, cropT: r.cropT, cropB: r.cropB, cropL: r.cropL || 0, cropR: r.cropR || 0 });
       addClipToGrid(clip, 1);
       if (show.clips[clip.id]) showClip(clip);          // visible tout de suite dans l'aperçu (un carton d'attente tant que la fenêtre n'est pas choisie)
       toast('Diaporama lancé dans PowerPoint. Dans les réglages à droite, clique sur « Choisir la fenêtre à afficher » puis sélectionne « Diaporama PowerPoint ».');
@@ -1406,7 +1415,7 @@ function renderGrid() {
       const c = show.clips[id];
       h += c ? `<div class="cell${sel?.kind === 'clip' && sel.id === id ? ' sel' : ''}" data-layer="${l.id}" data-col="${col}" data-clip="${id}" draggable="true">
           <div class="c-th">${thumb(c)}</div><div class="c-bar"><i></i></div>
-          <div class="c-name"><span class="tag">${TYPE_TAG[c.type]}</span>${esc(clipLabel(c))}</div>
+          <div class="c-name">${c.retour ? '<span class="tag ret" title="Aussi sur l\'écran retour">R</span>' : ''}<span class="tag">${TYPE_TAG[c.type]}</span>${esc(clipLabel(c))}</div>
           ${hasClock(c) ? '<button class="c-pause" title="Pause / reprise"></button><button class="c-restart" title="Recommencer (compte à rebours : remis au départ, en attente de l\'envoi)">↺</button>' : ''}<button class="c-stop" title="Éteindre ce clip (fondu vers le vide) — en mode Préparation : retiré de la préparation ; Maj+clic : coupé directement à la sortie">■</button><button class="c-edit" title="Régler ce clip sans le lancer">✎</button><button class="c-x" title="Retirer de la grille">✕</button></div>`
         : `<div class="cell empty" data-layer="${l.id}" data-col="${col}"></div>`;
     });
@@ -1689,6 +1698,8 @@ const zoneOpts = (first) => [...first, ...show.slices.map((z, i) => [z.id, (i + 
 function clipInspector(c) {
   let h = `<div class="panel-h"><h3>${TYPE_NAME[c.type]}</h3><button class="btn sm gold" data-act="launch-sel">▶ Lancer</button></div><div class="fields">`;
   h += fText('clip', 'name', 'Nom', c.name, clipLabel({ ...c, name: '' }));
+  h += fCheck('clip', 'retour', 'Aussi sur l\'écran retour (badge R)', c.retour, true);
+  if (c.retour && !show.outputs.some(o => o.mode === 'retour')) h += '<p class="note">Aucune sortie n\'est encore en « Retour conférenciers » : onglet Outputs → « ＋ Sortie », puis choisis ce mode.</p>';
   // Pause / reprise / recommencer, pour ce qui a une horloge : compte à rebours, bandeau, vidéo, diaporama, effet.
   if (c.type === 'video' || c.type === 'slideshow' || c.type === 'gen' || (c.type === 'text' && (c.mode === 'countdown' || c.scroll))) {
     const st = playState(c);
@@ -1963,7 +1974,7 @@ function bindInspector() {
     if (t.dataset.re) renderInspector();
     if (s === 'cue') renderCues();
     else if (s === 'layer' && (k === 'name' || k === 'zone')) { renderGrid(); renderCues(); }
-    else if (s === 'clip' && ['name', 'text', 'color', 'mode', 'kind', 'colorA', 'colorB', 'cdMin', 'cdMode', 'cdTime'].includes(k)) { renderGrid(); renderCues(); if (show.pool.includes(sel?.id)) renderLib(); }
+    else if (s === 'clip' && ['name', 'text', 'color', 'mode', 'kind', 'colorA', 'colorB', 'cdMin', 'cdMode', 'cdTime', 'retour'].includes(k)) { renderGrid(); renderCues(); if (show.pool.includes(sel?.id)) renderLib(); }
   });
   // Diaporama : liste « Contenu » (monter / descendre / retirer, réordonner en glissant, dépôt de médias depuis la médiathèque).
   const ssClip = () => (sel?.kind === 'clip' && show.clips[sel.id]?.type === 'slideshow' ? show.clips[sel.id] : null);
@@ -3210,6 +3221,24 @@ function outputStatus(o) {
   const inf = o.id === 'main' ? outInfo : outInfos[o.id];
   return `${inf.w}×${inf.h} · ${inf.fps} i/s${inf.fs ? ' · plein écran' : ' · fenêtre'}`;
 }
+/* ---------- écran retour conférenciers (sortie en mode « retour ») ---------- */
+/** Ce que peut montrer une sortie secondaire (onglet Outputs et Réglages). */
+const modeOptions = (o, zones) => `<option value="comp"${o.mode === 'comp' ? ' selected' : ''}>Toute la composition</option>`
+  + `<option value="retour"${o.mode === 'retour' ? ' selected' : ''}>Retour conférenciers : fichiers « R » en entier + chrono</option>`
+  + zones.map(z => `<option value="zone:${esc(z.id)}"${o.mode === 'zone' && o.zoneId === z.id ? ' selected' : ''}>Zone « ${esc(z.name)} » en plein cadre</option>`).join('');
+function setOutMode(o, v) {
+  if (v.startsWith('zone:')) { o.mode = 'zone'; o.zoneId = v.slice(5); } else { o.mode = v === 'retour' ? 'retour' : 'comp'; o.zoneId = ''; }
+}
+/** Réglages propres à un écran retour : affiche de repos (fichier de la médiathèque) et place du chrono (cadre à glisser sur l'aperçu). */
+function retourFields(o) {
+  const files = media.filter(m => m.type === 'image' || m.type === 'video'), cur = o.idle?.name || '';
+  return `<div class="oc-f"><label class="oc-scr" title="Ce que voit le conférencier quand aucun fichier marqué « R » ne passe">Affiche de repos <select data-out-f="idle" data-out="${esc(o.id)}">
+      <option value="">Écran noir</option>${files.map(m => `<option value="${esc(m.name)}"${m.name === cur ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label></div>
+    <p class="note oc-note">Coche <b>« Aussi sur l'écran retour »</b> dans les réglages d'un clip (badge <b>R</b> dans la grille) : PowerPoint, affiches,
+      chrono… Le dernier lancé s'affiche ici <b>en entier</b>, jamais découpé par les zones ; un compte à rebours ou une horloge « R » se pose
+      par-dessus, dans le cadre <b>⏱</b> à glisser sur l'aperçu (coin en bas à droite pour sa taille).</p>`;
+}
+const timerBox = o => { const t = o.timer || { x: 0.68, y: 0.76, w: 0.3, h: 0.2 }; return `<div class="oc-timer" data-timer="${esc(o.id)}" style="left:${t.x * 100}%;top:${t.y * 100}%;width:${t.w * 100}%;height:${t.h * 100}%" title="Place du chrono sur l'écran retour : glisse pour le déplacer, tire le coin pour le redimensionner"><span>⏱ Chrono</span><i class="oc-timer-rs"></i></div>`; };
 function renderOutputsView() {
   const v = $('#view-outputs'); if (!v) return;
   const layers = [...M.layersFor(show, live)].reverse(), zones = show.slices.filter(z => !zoneIsFull(z));
@@ -3220,15 +3249,33 @@ function renderOutputsView() {
         <div class="oc-h"><span class="out-dot"></span><input type="text" data-out-f="name" data-out="${esc(o.id)}" value="${esc(o.name)}" title="Nom de la sortie">
           <span class="oc-badge">${main ? 'MASTER · spectateurs' : 'Sortie ' + (show.outputs.indexOf(o) + 1)}</span>
           <button class="btn sm${on ? '' : ' gold'}" data-act="out-open" data-out="${esc(o.id)}">${on ? 'Rouvrir' : 'Ouvrir'}</button>${main ? '' : `<button class="btn sm danger oc-del" data-act="out-del" data-out="${esc(o.id)}" title="Supprimer cette sortie (sa fenêtre se ferme)">✕</button>`}</div>
-        <div class="oc-screen"><canvas data-outcv="${esc(o.id)}"></canvas><span class="oc-st" data-outst="${esc(o.id)}">${esc(outputStatus(o))}</span></div>
+        <div class="oc-screen"><canvas data-outcv="${esc(o.id)}"></canvas>${o.mode === 'retour' ? timerBox(o) : ''}<span class="oc-st" data-outst="${esc(o.id)}">${esc(outputStatus(o))}</span></div>
         <div class="oc-f">${screenSelect(o)}</div>
-        <div class="oc-f">${main ? '<span class="note">Toute la composition, avec le mapping (onglet Mapping) et le son.</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie"><option value="comp"${o.mode !== 'zone' ? ' selected' : ''}>Toute la composition</option>${zones.map(z => `<option value="zone:${esc(z.id)}"${o.mode === 'zone' && o.zoneId === z.id ? ' selected' : ''}>Zone « ${esc(z.name)} » en plein cadre</option>`).join('')}</select>`}</div>
-        <div class="oc-layers">${layers.map(l => `<label class="chip${o.hidden.includes(l.id) ? '' : ' on'}" title="${o.hidden.includes(l.id) ? 'Masqué sur cette sortie : clic pour l\'afficher' : 'Visible sur cette sortie : clic pour le masquer'}"><input type="checkbox" data-outlayer="${esc(o.id)}|${esc(l.id)}"${o.hidden.includes(l.id) ? '' : ' checked'}>${esc(l.name)}</label>`).join('')}</div>
+        <div class="oc-f">${main ? '<span class="note">Toute la composition, avec le mapping (onglet Mapping) et le son.</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie">${modeOptions(o, zones)}</select>`}</div>
+        ${o.mode === 'retour' ? retourFields(o) : `<div class="oc-layers">${layers.map(l => `<label class="chip${o.hidden.includes(l.id) ? '' : ' on'}" title="${o.hidden.includes(l.id) ? 'Masqué sur cette sortie : clic pour l\'afficher' : 'Visible sur cette sortie : clic pour le masquer'}"><input type="checkbox" data-outlayer="${esc(o.id)}|${esc(l.id)}"${o.hidden.includes(l.id) ? '' : ' checked'}>${esc(l.name)}</label>`).join('')}</div>`}
       </div>`;
     }).join('')}</div>`;
 }
 function bindOutputsView() {
   const v = $('#view-outputs');
+  // Cadre du chrono d'un écran retour : glisser = déplacer, coin = redimensionner. L'écran retour suit en direct.
+  v.addEventListener('pointerdown', e => {
+    const box = e.target.closest('.oc-timer'); if (!box) return;
+    const o = M.outputById(show, box.dataset.timer), scr = box.closest('.oc-screen'); if (!o || !scr) return;
+    e.preventDefault(); box.setPointerCapture(e.pointerId);
+    const R = scr.getBoundingClientRect(), t0 = { ...(o.timer || { x: 0.68, y: 0.76, w: 0.3, h: 0.2 }) }, x0 = e.clientX, y0 = e.clientY, resize = !!e.target.closest('.oc-timer-rs');
+    const cl = (v1, lo, hi) => Math.min(hi, Math.max(lo, v1));
+    const move = ev => {
+      const dx = (ev.clientX - x0) / R.width, dy = (ev.clientY - y0) / R.height, t = { ...t0 };
+      if (resize) { t.w = cl(t0.w + dx, 0.05, 1 - t0.x); t.h = cl(t0.h + dy, 0.05, 1 - t0.y); }
+      else { t.x = cl(t0.x + dx, 0, 1 - t0.w); t.y = cl(t0.y + dy, 0, 1 - t0.h); }
+      o.timer = t;
+      Object.assign(box.style, { left: t.x * 100 + '%', top: t.y * 100 + '%', width: t.w * 100 + '%', height: t.h * 100 + '%' });
+      commit(false);
+    };
+    const up = () => { box.removeEventListener('pointermove', move); box.removeEventListener('pointerup', up); box.removeEventListener('pointercancel', up); commit(); };
+    box.addEventListener('pointermove', move); box.addEventListener('pointerup', up); box.addEventListener('pointercancel', up);
+  });
   v.addEventListener('click', e => {
     const act = e.target.closest('[data-act]')?.dataset.act, id = e.target.closest('[data-out]')?.dataset.out;
     if (act === 'out-add') return addOutputAsk();
@@ -3248,7 +3295,8 @@ function bindOutputsView() {
     const f = t.dataset.outF, o = f && M.outputById(show, t.dataset.out);
     if (!o) return;
     if (f === 'name') { o.name = t.value.trim().slice(0, 40) || o.name; t.value = o.name; renderGrid(); updatePlaying(); }
-    if (f === 'mode') { if (t.value.startsWith('zone:')) { o.mode = 'zone'; o.zoneId = t.value.slice(5); } else { o.mode = 'comp'; o.zoneId = ''; } }
+    if (f === 'mode') { setOutMode(o, t.value); commit(); return renderOutputsView(); }
+    if (f === 'idle') { const m = mediaAll.find(x => x.name === t.value); o.idle = m ? { src: m.url, type: m.type, name: m.name } : null; }
     commit();
   });
 }
@@ -3257,9 +3305,10 @@ function drawOutputsView() {
   if (!eng) return;
   for (const o of show.outputs) {
     const cv = $(`#view-outputs canvas[data-outcv="${CSS.escape(o.id)}"]`); if (!cv) continue;
-    eng.hideLayers = o.hidden.length ? new Set(o.hidden) : null;
+    eng.hideLayers = o.hidden.length && o.mode !== 'retour' ? new Set(o.hidden) : null;
     eng.frame();
     if (o.id === 'main') drawView('output', cv);
+    else if (o.mode === 'retour') drawView('retour', cv, eng, null, o);
     else { const zone = o.mode === 'zone' && show.slices.find(z => z.id === o.zoneId); drawView(zone ? 'zone' : 'comp', cv, eng, zone || null); }
   }
   eng.hideLayers = null;
@@ -3302,7 +3351,7 @@ function outputsPanel() {
     return `<div class="out-row${on ? ' on' : ''}" data-out="${esc(o.id)}">
       <span class="out-dot" title="${on ? 'Ouverte' : 'Fermée'}"></span>
       <input type="text" data-out-f="name" data-out="${esc(o.id)}" value="${esc(o.name)}" title="Nom de la sortie">
-      ${main ? '<span class="out-what">LED : mapping (onglet Mapping) + son</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie"><option value="comp"${o.mode !== 'zone' ? ' selected' : ''}>Toute la composition</option>${zones.map(z => `<option value="zone:${esc(z.id)}"${o.mode === 'zone' && o.zoneId === z.id ? ' selected' : ''}>Zone « ${esc(z.name)} » en plein cadre</option>`).join('')}</select>`}
+      ${main ? '<span class="out-what">LED : mapping (onglet Mapping) + son</span>' : `<select data-out-f="mode" data-out="${esc(o.id)}" title="Ce que montre cette sortie">${modeOptions(o, zones)}</select>`}
       ${screenSelect(o)}
       <span class="out-st">${on ? `${inf.w}×${inf.h}${inf.fs ? '' : ' · fenêtre'}` : (o.hidden.length ? `${o.hidden.length} calque${o.hidden.length > 1 ? 's' : ''} masqué${o.hidden.length > 1 ? 's' : ''}` : '')}</span>
       <button class="btn sm${on ? '' : ' gold'}" data-act="out-open" data-out="${esc(o.id)}">${on ? 'Rouvrir' : 'Ouvrir'}</button>
@@ -3424,7 +3473,7 @@ function bindSettings() {
     if (f && o) {
       if (f === 'name') { o.name = e.target.value.trim().slice(0, 40) || o.name; e.target.value = o.name; renderGrid(); renderInspector(); updatePlaying(); }
       if (f === 'screen') o.screen = e.target.value;
-      if (f === 'mode') { if (e.target.value.startsWith('zone:')) { o.mode = 'zone'; o.zoneId = e.target.value.slice(5); } else { o.mode = 'comp'; o.zoneId = ''; } }
+      if (f === 'mode') setOutMode(o, e.target.value);
       commit(); return;
     }
     if (e.target.id === 'key-action' || e.target.id === 'key-scene') { $('#keys-custom').innerHTML = keysPanel(); return; }
@@ -3468,16 +3517,17 @@ function replaceShow(s) {
 
 /* ---------- boucle d'affichage ---------- */
 let engLive = null;
-function drawView(view, cv, other, zone) {
+function drawView(view, cv, other, zone, out) {
   const eng = other || engLive;                      // moteur de la sortie par défaut, ou celui de l'aperçu
   if (!eng || !eng.cw) return;
   let w, h;
   if (view === 'comp') { w = eng.cw; h = eng.ch; }
+  else if (view === 'retour') { w = 960; h = 540; }
   else if (view === 'zone' && zone) { const k = Math.min(1, 960 / zone.src.w, 540 / zone.src.h); w = Math.max(2, Math.round(zone.src.w * k)); h = Math.max(2, Math.round(zone.src.h * k)); }
   else { const o = show.output, k = Math.min(1, 960 / o.w, 960 / o.h); w = Math.max(2, Math.round(o.w * k)); h = Math.max(2, Math.round(o.h * k)); }
   const g = eng.canvas;
   if (g.width < w || g.height < h) { g.width = Math.max(g.width, w); g.height = Math.max(g.height, h); }
-  eng.present(view, w, h, zone ? { zone, fit: false } : {});
+  if (view === 'retour') eng.presentRetour(w, h, out); else eng.present(view, w, h, zone ? { zone, fit: false } : {});
   if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
   cv.getContext('2d').drawImage(g, 0, g.height - h, w, h, 0, 0, w, h);
 }
@@ -3493,9 +3543,10 @@ function loop(t) {
       if (o && o.id !== 'main') {                              // aperçu d'une sortie secondaire : son propre moteur, avec ses calques masqués
         if (!engOut2) { try { engOut2 = new Engine({ role: 'preview', maxW: 640 }); } catch { engOut2 = null; } }
         if (engOut2) {
-          engOut2.hideLayers = new Set(o.hidden); engOut2.audio = eng.audio; engOut2.setState(show, live); engOut2.frame();
+          engOut2.hideLayers = o.mode === 'retour' ? null : new Set(o.hidden); engOut2.audio = eng.audio; engOut2.setState(show, live); engOut2.frame();
           const zone = o.mode === 'zone' && show.slices.find(z => z.id === o.zoneId);
-          drawView(zone ? 'zone' : 'comp', $('#preview'), engOut2, zone || null);
+          if (o.mode === 'retour') drawView('retour', $('#preview'), engOut2, null, o);
+          else drawView(zone ? 'zone' : 'comp', $('#preview'), engOut2, zone || null);
         }
       } else { drawView('comp', $('#preview')); if (engOut2) { engOut2.reset(); } }
     }
@@ -3532,8 +3583,19 @@ function loop(t) {
 function renderAll() { renderLib(); renderScenes(); renderGrid(); renderCues(); renderInspector(); updateTop(); renderShapeBar(); renderShapes(); if (tab === 'mapping') mapping?.render(); }
 
 async function boot() {
-  let data = null;
-  try { data = await (await fetch('/api/show')).json(); } catch { toast('Serveur local injoignable.', 'err'); }
+  let data = null, readOk = false;
+  try { const r = await fetch('/api/show'); if (r.ok) { data = await r.json(); readOk = true; } } catch { /* serveur injoignable */ }
+  // Copie locale (gardée à chaque modification) : prise si le show n'a pas pu être lu, ou si le dernier enregistrement avait échoué.
+  let local = null, unsaved = false;
+  try { local = JSON.parse(localStorage.getItem('regieLed.state'))?.show || null; unsaved = localStorage.getItem(UNSAVED_KEY) === '1'; } catch { /* pas de copie */ }
+  if (local && (!readOk || unsaved)) {
+    data = local;
+    setTimeout(() => toast(readOk ? 'Show repris depuis la copie de la régie : ses dernières modifications n\'avaient pas pu être enregistrées. Enregistrement en cours.' : 'Le show n\'a pas pu être lu sur le disque : repris depuis la copie de la régie.', 'err'), 800);
+    if (readOk) setTimeout(saveShow, 1500);                  // le serveur répond : la copie récente y est réenregistrée
+  } else if (!readOk) {
+    saveBlocked = true;                                      // ni show lisible ni copie : surtout ne rien écraser
+    setTimeout(() => toast('Le show n\'a pas pu être lu (serveur local injoignable ou fichier verrouillé). Rien ne sera enregistré : relance la régie.', 'err'), 800);
+  }
   show = M.normalizeShow(data);
   live = restoreLive();
   bc = new BroadcastChannel('regie-led');

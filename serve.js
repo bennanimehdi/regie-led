@@ -9,7 +9,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
+import { pipeline } from 'node:stream/promises';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 
 const DEFAULT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,11 +71,22 @@ async function serveFile(req, res, file, cache) {
     if (start > end || start >= st.size) { res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }); return res.end(); }
     res.writeHead(206, { ...head, 'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Content-Length': end - start + 1 });
     if (req.method === 'HEAD') return res.end();
-    return fs.createReadStream(file, { start, end }).on('error', () => res.destroy()).pipe(res);
+    return streamTo(fs.createReadStream(file, { start, end }), res);
   }
   res.writeHead(200, { ...head, 'Content-Length': st.size });
   if (req.method === 'HEAD') return res.end();
-  fs.createReadStream(file).on('error', () => res.destroy()).pipe(res);
+  return streamTo(fs.createReadStream(file), res);
+}
+/** Envoie un fichier et le referme dans TOUS les cas. Avec .pipe(), un fichier dont la lecture était interrompue par le lecteur
+ *  vidéo (il interrompt ses requêtes sans cesse : recherche, boucle) restait ouvert ; au bout de quelques minutes de vidéos en
+ *  boucle, Windows refusait d'en ouvrir d'autres (« EMFILE: too many open files ») : vignettes noires, show non enregistré. */
+function streamTo(rs, res) {
+  return pipeline(rs, res).catch(() => { rs.destroy(); res.destroy(); });
+}
+/** Reçoit le corps d'une requête dans un fichier ; si l'envoi est interrompu, le fichier est refermé (pas de fuite). */
+async function receiveTo(req, file) {
+  try { await pipeline(req, fs.createWriteStream(file)); }
+  catch (e) { throw req.aborted || e.code === 'ERR_STREAM_PREMATURE_CLOSE' ? new Error('envoi interrompu') : e; }
 }
 
 function readBody(req, limit = 20 * 1024 * 1024) {
@@ -85,9 +98,9 @@ function readBody(req, limit = 20 * 1024 * 1024) {
   });
 }
 
-function run(cmd, args, timeout) {
+function run(cmd, args, timeout, env) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { timeout, maxBuffer: 4 * 1024 * 1024, ...(env ? { env: { ...process.env, ...env } } : {}) }, (err, stdout, stderr) => {
       if (err) { err.stderr = String(stderr || ''); reject(err); } else resolve(String(stdout).trim());
     });
   });
@@ -145,7 +158,30 @@ export function startServer(opts = {}) {
   try { idx = { ...idx, ...JSON.parse(fs.readFileSync(INDEX, 'utf8')) }; } catch { /* premier lancement */ }
   let idxT = null;
   const saveIdx = () => { clearTimeout(idxT); idxT = setTimeout(() => fsp.writeFile(INDEX, JSON.stringify(idx)).catch(() => {}), 400); };
-  const hashFile = file => new Promise((ok, ko) => { const h = crypto.createHash('sha256'); fs.createReadStream(file).on('data', c => h.update(c)).on('end', () => ok(h.digest('hex'))).on('error', ko); });
+  const hashFile = file => new Promise((ok, ko) => { const h = crypto.createHash('sha256'), rs = fs.createReadStream(file); rs.on('data', c => h.update(c)).on('end', () => ok(h.digest('hex'))).on('error', e => { rs.destroy(); ko(e); }); });
+  /** Range un PowerPoint reçu (`tmp`) sous son nom dans presentations/ et renvoie le nom retenu.
+   *  - même contenu déjà présent : on garde celui-là (rien à remplacer, même s'il est ouvert dans PowerPoint) ;
+   *  - sinon on remplace l'ancien. Sous Windows, le remplacement est refusé (EPERM / EBUSY) tant que le fichier est ouvert dans
+   *    PowerPoint ou en cours de synchronisation par OneDrive : quelques essais, puis enregistrement sous « nom (2).pptx »… */
+  async function placePres(tmp, name) {
+    const file = path.join(PRES, name);
+    if (fs.existsSync(file)) {
+      try { if (await hashFile(file) === await hashFile(tmp)) { await fsp.rm(tmp, { force: true }); return name; } } catch { /* illisible : on remplace */ }
+    }
+    for (let i = 0; i < 4; i++) {
+      try { await fsp.rename(tmp, file); return name; }
+      catch (e) { if (!['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e; await new Promise(r => setTimeout(r, 400)); }
+    }
+    const ext = path.extname(name), base = name.slice(0, name.length - ext.length);
+    for (let n = 2; n < 100; n++) {
+      const alt = `${base} (${n})${ext}`;
+      if (fs.existsSync(path.join(PRES, alt))) continue;
+      await fsp.rename(tmp, path.join(PRES, alt));
+      console.warn(`PowerPoint « ${name} » verrouillé (ouvert dans PowerPoint ou OneDrive) : nouvelle version enregistrée sous « ${alt} »`);
+      return alt;
+    }
+    throw Object.assign(new Error(`« ${name} » est ouvert dans PowerPoint : ferme-le puis réimporte-le.`), { code: 409 });
+  }
   async function mediaHash(name) {
     const file = path.join(MEDIA, name), st = await fsp.stat(file), e = idx.media[name];
     if (e?.hash && e.size === st.size && e.mtime === Math.round(st.mtimeMs)) return e.hash;
@@ -266,11 +302,7 @@ export function startServer(opts = {}) {
       await fsp.mkdir(WORK, { recursive: true });
       const id = 'regie-import-' + Math.random().toString(36).slice(2, 8);     // nom unique : le script ne referme que ce document
       const src = path.join(WORK, id + ext);
-      await new Promise((resolve, reject) => {
-        const ws = fs.createWriteStream(src);
-        req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject);
-        req.on('aborted', () => reject(new Error('envoi interrompu')));
-      });
+      try { await receiveTo(req, src); } catch (e) { await fsp.rm(src, { force: true }).catch(() => {}); throw e; }
       let pdf = src;
       if (process.platform === 'win32' && kind === 'pdf') return { pdfFile: src };     // PDF : la régie le lit elle-même (pdf.js)
       if (process.platform === 'win32' && kind !== 'powerpoint') {          // Word / Excel : Office l'exporte en PDF, la régie le lit (pdf.js)
@@ -355,11 +387,53 @@ export function startServer(opts = {}) {
 
   /** Pilote le diaporama PowerPoint en direct. Renvoie {pos, total, cropT, cropB} : position + rognage de la fenêtre capturée.
    *  Mac : tools/pptlive.applescript (osascript). Windows : tools/pptlive.ps1 (PowerShell + automation COM). */
+  /** Rapport largeur / hauteur des diapositives d'un .pptx / .ppsx, lu dans ppt/presentation.xml (<p:sldSz cx cy>) sans ouvrir
+   *  PowerPoint (un .pptx est une archive zip). 0 si illisible (ancien .ppt, fichier abîmé). */
+  async function slideRatio(file) {
+    let fh;
+    try {
+      fh = await fsp.open(file, 'r');
+      const { size } = await fh.stat(), tailLen = Math.min(size, 65557), tail = Buffer.alloc(tailLen);
+      await fh.read(tail, 0, tailLen, size - tailLen);
+      const eocd = tail.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));             // fin du répertoire central du zip
+      if (eocd < 0) return 0;
+      const cdSize = tail.readUInt32LE(eocd + 12), cdOff = tail.readUInt32LE(eocd + 16), cd = Buffer.alloc(cdSize);
+      await fh.read(cd, 0, cdSize, cdOff);
+      for (let i = 0; i + 46 <= cd.length && cd.readUInt32LE(i) === 0x02014b50;) {
+        const method = cd.readUInt16LE(i + 10), csize = cd.readUInt32LE(i + 20), nlen = cd.readUInt16LE(i + 28);
+        const xlen = cd.readUInt16LE(i + 30), clen = cd.readUInt16LE(i + 32), loff = cd.readUInt32LE(i + 42);
+        if (cd.toString('utf8', i + 46, i + 46 + nlen) === 'ppt/presentation.xml') {
+          const lh = Buffer.alloc(30); await fh.read(lh, 0, 30, loff);
+          const data = Buffer.alloc(csize); await fh.read(data, 0, csize, loff + 30 + lh.readUInt16LE(26) + lh.readUInt16LE(28));
+          const tag = /<p:sldSz\b[^>]*>/.exec((method === 8 ? zlib.inflateRawSync(data) : data).toString('utf8'))?.[0] || '';
+          const cx = +(/\bcx="(\d+)"/.exec(tag)?.[1] || 0), cy = +(/\bcy="(\d+)"/.exec(tag)?.[1] || 0);
+          return cx > 0 && cy > 0 ? cx / cy : 0;
+        }
+        i += 46 + nlen + xlen + clen;
+      }
+      return 0;
+    } catch { return 0; } finally { await fh?.close().catch(() => {}); }
+  }
+  /** Rognage de la capture du diaporama : barre de titre (haut), marge (bas) et, si la diapositive n'est pas au format de la
+   *  fenêtre (A4, 4:3…), les bandes noires que PowerPoint ajoute sur les côtés (ou en haut et en bas) — sinon « Étirer »
+   *  étirait aussi ces bandes et l'image ne prenait pas toute la largeur de la sortie. */
+  function pptCrop(h, cap, ratio) {
+    let c, area;                                                          // area = rapport largeur / hauteur de la zone de la diapositive
+    if (cap > 0 && h > 0) { c = { cropT: cap / h, cropB: 0 }; area = 16 / 9; }  // Windows : zone de la diapositive réglée en 16:9 par le script
+    else if (h === 768) { c = { cropT: 40 / 768, cropB: 16 / 768 }; area = 1280 / (768 - 56); }   // Mac : fenêtre de 1280 × 768 points
+    else { c = { cropT: h > 0 ? 32 / h : 0, cropB: 0 }; area = 16 / 9; }
+    c.cropL = 0; c.cropR = 0;
+    if (ratio > 0 && ratio < area * 0.98) c.cropL = c.cropR = (1 - ratio / area) / 2;                       // diapositive plus étroite : bandes à gauche et à droite
+    else if (ratio > area * 1.02) { const v = (1 - c.cropT - c.cropB) * (1 - area / ratio) / 2; c.cropT += v; c.cropB += v; }   // plus large : en haut et en bas
+    return c;
+  }
   async function pptLive(args) {
     if (process.platform !== 'darwin' && process.platform !== 'win32') throw Object.assign(new Error('PowerPoint en direct n\'est disponible que sur Mac et Windows.'), { code: 400 });
     let out;
-    try { out = await (process.platform === 'darwin' ? run('osascript', [path.join(TOOLS, 'pptlive.applescript'), ...args], 110000) : runPs('pptlive.ps1', args, 110000)); }
+    // Mac : REGIE_FRONT_APP = l'application de bureau à remettre devant après le lancement du diaporama (vide dans le navigateur).
+    try { out = await (process.platform === 'darwin' ? run('osascript', [path.join(TOOLS, 'pptlive.applescript'), ...args], 110000, { REGIE_FRONT_APP: opts.frontApp || '' }) : runPs('pptlive.ps1', args, 110000)); }
     catch (e) {
+      console.warn(`PowerPoint « ${args[0]} » a échoué : ${String(e.stderr || e.message).trim().slice(0, 800)}`);   // erreur complète dans le journal
       if (/aucun diaporama/i.test(e.stderr)) throw Object.assign(new Error('Aucun diaporama en cours dans PowerPoint : clique sur « Relancer le diaporama ».'), { code: 409 });
       if (/-1743|not authorized|pas autoris/i.test(e.stderr)) throw new Error('macOS a bloqué le pilotage de PowerPoint. Ouvre Réglages Système → Confidentialité et sécurité → Automatisation, et autorise PowerPoint pour l\'application qui a lancé la régie.');
       if (/80040154|introuvable|Class not registered|-600|-10810/i.test(e.stderr)) throw new Error('PowerPoint est introuvable sur cet ordinateur : installe Microsoft PowerPoint pour jouer un diaporama en direct.');
@@ -367,10 +441,10 @@ export function startServer(opts = {}) {
       throw new Error('PowerPoint n\'a pas pu exécuter la commande. (' + e.stderr.trim().split('\n').pop().slice(0, 160) + ')');
     }
     const [pos, total, h, cap] = out.split('/').map(Number);
-    if (cap > 0 && h > 0) return { pos: pos || 0, total: total || 0, cropT: cap / h, cropB: 0 };   // Windows : barre de titre mesurée par le script
     // Mac, fenêtre de 768 points : 32 de barre de titre + 8 de marge, la diapositive, puis 16 en bas (marge + coins arrondis).
-    const crop = h === 768 ? { cropT: 40 / 768, cropB: 16 / 768 } : { cropT: h > 0 ? 32 / h : 0, cropB: 0 };
-    return { pos: pos || 0, total: total || 0, ...crop };
+    // Windows : barre de titre mesurée par le script. Plus les bandes noires d'une diapositive qui n'est pas en 16:9.
+    const ratio = args[1] ? await slideRatio(args[1]) : 0;
+    return { pos: pos || 0, total: total || 0, ...pptCrop(h, cap, ratio) };
   }
   /** Windows : lance un script PowerShell de tools/ (automation COM d'Office). */
   const runPs = (script, args, timeout) => run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(TOOLS, script), ...args], timeout);
@@ -411,7 +485,10 @@ export function startServer(opts = {}) {
 
       if (p === '/api/show') {
         if (req.method === 'GET') {
-          try { return send(res, 200, await fsp.readFile(SHOW)); } catch { return send(res, 200, 'null'); }
+          // « null » seulement s'il n'y a vraiment pas encore de show. Toute autre erreur de lecture (fichier verrouillé, trop de
+          // fichiers ouverts…) est signalée : sinon la régie repartait d'un show vide et l'enregistrait par-dessus le vrai.
+          try { return send(res, 200, await fsp.readFile(SHOW)); }
+          catch (e) { if (e.code === 'ENOENT') return send(res, 200, 'null'); console.warn('Lecture du show impossible : ' + e.message); return send(res, 503, { error: fsMessage(e, DATA) }); }
         }
         if (req.method === 'PUT' || req.method === 'POST') {
           const body = await readBody(req);
@@ -436,12 +513,8 @@ export function startServer(opts = {}) {
           const h = crypto.createHash('sha256'); let size = 0;
           try {
             await fsp.mkdir(MEDIA, { recursive: true });              // dossier supprimé ou déplacé entre-temps : on le recrée
-            await new Promise((resolve, reject) => {
-              const ws = fs.createWriteStream(tmp);
-              req.on('data', c => { h.update(c); size += c.length; });
-              req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject);
-              req.on('aborted', () => reject(new Error('envoi interrompu')));
-            });
+            req.on('data', c => { h.update(c); size += c.length; });
+            await receiveTo(req, tmp);
             const hash = h.digest('hex'), same = await findSame(size, hash);
             if (same) {                                                // déjà dans le dossier : pas de doublon, on réutilise ce fichier
               await fsp.rm(tmp, { force: true });
@@ -524,14 +597,14 @@ export function startServer(opts = {}) {
         const name = presName(url.searchParams.get('name'));
         if (!name) { req.resume(); return send(res, 400, { error: 'Ce n\'est pas un fichier PowerPoint (.pptx, .ppt, .ppsx).' }); }
         await fsp.mkdir(PRES, { recursive: true });
-        const file = path.join(PRES, name), tmp = file + '.envoi';
-        await new Promise((resolve, reject) => {
-          const ws = fs.createWriteStream(tmp);
-          req.pipe(ws); ws.on('finish', resolve); ws.on('error', reject); req.on('error', reject);
-          req.on('aborted', () => reject(new Error('envoi interrompu')));
-        });
-        await fsp.rename(tmp, file);
-        try { return send(res, 200, { ok: true, file: name, ...(await pptLive(['open', file])) }); }
+        let file = path.join(PRES, name);
+        const tmp = file + '.envoi';
+        try { await receiveTo(req, tmp); } catch (e) { await fsp.rm(tmp, { force: true }).catch(() => {}); throw e; }
+        let finalName = name;
+        try { finalName = await placePres(tmp, name); }
+        catch (e) { await fsp.rm(tmp, { force: true }).catch(() => {}); throw e; }
+        file = path.join(PRES, finalName);
+        try { return send(res, 200, { ok: true, file: finalName, ...(await pptLive(['open', file])) }); }
         catch (e) { return send(res, e.code || 500, { error: String(e.message || e) }); }
       }
       if (p === '/api/docs') {                                       // documents à pages gardés par la régie
