@@ -481,6 +481,31 @@ export function startServer(opts = {}) {
         }
       }
 
+      if (p === '/api/journal') {                                    // enregistreur de diagnostic : une ligne JSON par événement, un fichier par ouverture de la régie
+        const JR = path.join(DATA, 'journaux');
+        const id = url.searchParams.get('id') || '';
+        if (id && !/^[\w-]{1,60}$/.test(id)) return send(res, 400, { error: 'Nom de journal invalide' });
+        if (req.method === 'POST' && id) {
+          const body = await readBody(req, 4 * 1024 * 1024);
+          await fsp.mkdir(JR, { recursive: true });
+          const f = path.join(JR, id + '.jsonl'), fresh = !fs.existsSync(f);
+          await fsp.appendFile(f, body);
+          if (fresh) {                                               // on garde les 30 derniers journaux
+            const all = (await fsp.readdir(JR)).filter(n => n.endsWith('.jsonl')).sort();
+            for (const n of all.slice(0, -30)) await fsp.unlink(path.join(JR, n)).catch(() => {});
+          }
+          return send(res, 200, { ok: true });
+        }
+        if (req.method === 'GET') {
+          if (!id) return send(res, 200, (await fsp.readdir(JR).catch(() => [])).filter(n => n.endsWith('.jsonl')).sort().reverse());
+          try {
+            const buf = await fsp.readFile(path.join(JR, id + '.jsonl'));
+            res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Disposition': `attachment; filename="journal-regie-${id}.jsonl"` });
+            return res.end(buf);
+          } catch { return send(res, 404, { error: 'Journal introuvable' }); }
+        }
+      }
+
       if (p === '/api/version' && req.method === 'GET') {            // date du fichier le plus récent : la sortie se recharge si elle est en retard
         let v = 0;
         const files = ['index.html', 'output.html'];

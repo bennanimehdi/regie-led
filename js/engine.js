@@ -6,7 +6,7 @@
  *   3. present('comp')   affiche la composition telle quelle (aperçu) ;
  *      present('output') découpe la composition en zones et pose chaque zone sur la sortie HDMI (mapping).
  */
-import { hexToRgb, sliceMatrix, SHAPE_INDEX, shapePoints, shapeGroups, validPoly, fullQuad, zoneQuad, zonePoint, squareToQuad, newClip, isTimerClip, RETOUR_TIMER } from './model.js';
+import { transitionCode, hexToRgb, sliceMatrix, SHAPE_INDEX, shapePoints, shapeGroups, validPoly, fullQuad, zoneQuad, zonePoint, squareToQuad, newClip, isTimerClip, RETOUR_TIMER } from './model.js';
 import { createSource, sourceSig } from './sources.js';
 
 const VERT = `#version 300 es
@@ -29,6 +29,7 @@ uniform float u_rot, u_aspect, u_alpha, u_beat, u_audio;
 uniform float u_bri, u_con, u_sat, u_hue, u_inv, u_pix, u_rgb, u_strobe, u_pulse, u_zoom, u_audioAmt, u_tintAmt;
 uniform int u_mirror;
 uniform vec3 u_tint;
+uniform int u_tr; uniform float u_trT, u_trIn;      // transition en cours : type (1 volet →, 2 volet ↓, 3 glisser, 4 iris, 5 zoom), avancement 0..1, 1 = image entrante
 vec3 hueRot(vec3 c, float a){ const vec3 k = vec3(0.57735); float ca = cos(a), sa = sin(a); return c*ca + cross(k,c)*sa + k*dot(k,c)*(1.-ca); }
 vec4 samp(vec2 uv){
   vec2 p = uv - 0.5 - u_off;
@@ -57,6 +58,17 @@ void main(){
     if ((u_zshape == 1 && zm.x + zm.y > 0.5) || (u_zshape == 2 && dot(zm*2., zm*2.) > 1.) || (u_zshape == 3 && zm.x > vd*0.5)
       || (u_zshape == 4 && zm.x > (1. - vd)*0.5) || (u_zshape == 5 && zm.y > 0.5 - 0.5*zm.x)) { o = vec4(0.); return; }
     if (u_zshape == 6 && texture(u_mask, uv).r < 0.5) { o = vec4(0.); return; }
+  }
+  if (u_tr > 0) {                                     // transitions dans le repère de la zone (uv 0..1, y vers le haut)
+    float e = u_trT*u_trT*(3. - 2.*u_trT);           // départ et arrivée en douceur
+    if (u_tr == 1) { if ((u_trIn > 0.5) != (uv.x < e)) { o = vec4(0.); return; } }
+    else if (u_tr == 2) { if ((u_trIn > 0.5) != (uv.y > 1. - e)) { o = vec4(0.); return; } }
+    else if (u_tr == 3) { uv.x += u_trIn > 0.5 ? e - 1. : e; if (uv.x < 0. || uv.x > 1.) { o = vec4(0.); return; } }
+    else if (u_tr == 4) {
+      vec2 d = (uv - 0.5)*vec2(u_aspect, 1.); float R = e*0.5*length(vec2(u_aspect, 1.)) * 1.02;
+      if ((u_trIn > 0.5) != (length(d) < R)) { o = vec4(0.); return; }
+    }
+    else if (u_tr == 5) { float k = u_trIn > 0.5 ? mix(0.55, 1., e) : mix(1., 1.6, e); uv = (uv - 0.5)/k + 0.5; if (uv.x < 0. || uv.x > 1. || uv.y < 0. || uv.y > 1.) { o = vec4(0.); return; } }
   }
   float bp = fract(u_beat);
   uv = (uv - 0.5)/(1. + u_zoom*0.3*pow(1.-bp, 3.)) + 0.5;
@@ -265,6 +277,7 @@ export class Engine {
       rt.cur = clipId ? { clipId } : null;
       rt.t0 = L.t0;
       rt.fade = Math.max(0, +(L.fade ?? layer.fade ?? 0.5)) * 1000;
+      rt.tr = L.tr || 'fade';
       rt.started = false;
       rt.late = first || now - L.t0 > rt.fade + 2500;      // fenêtre ouverte en cours de show : pas de fondu
       if (rt.cur) this.source(clipId, now)?.src.start(L.t0);
@@ -322,8 +335,9 @@ export class Engine {
     return { x: z.src.x / comp.w, y: z.src.y / comp.h, w: z.src.w / comp.w, h: z.src.h / comp.h, px: z.src.w, py: z.src.h, rot: (+z.src.rot || 0) * Math.PI / 180, shape, mask };
   }
 
-  drawSource(e, clip, alpha, fx, env, rect) {
+  drawSource(e, clip, alpha, fx, env, rect, tr) {
     const gl = this.gl, src = e.src, p = this.use('src'), u = p.u;
+    gl.uniform1i(u.u_tr, tr ? tr.code : 0); gl.uniform1f(u.u_trT, tr ? tr.t : 0); gl.uniform1f(u.u_trIn, tr?.in ? 1 : 0);
     const cl = Math.min(0.45, Math.max(0, +clip.cropL || 0)), cr = Math.min(0.45, Math.max(0, +clip.cropR || 0));
     const ct = Math.min(0.45, Math.max(0, +clip.cropT || 0)), cb = Math.min(0.45, Math.max(0, +clip.cropB || 0));
     const Ac = rect ? rect.px / rect.py : this.cw / this.ch, As = (src.w * (1 - cl - cr)) / (src.h * (1 - ct - cb)) || Ac;
@@ -406,8 +420,15 @@ export class Engine {
       if (opaqueRect && blackA > 0) this.drawSource(this.black, FULL_FRAME, blackA, NO_FX, env, opaqueRect);
       gl.enable(gl.BLEND); gl.blendEquation(gl.FUNC_ADD); gl.blendFunc(gl.ONE, gl.ONE);
       const fx = layer.fx || NO_FX;
-      if (prev && prev.src.ready && rt.prev && t < 1) this.drawSource(prev, prevClip, 1 - t, fx, env, prevRect);
-      if (cur && cur.src.ready && t > 0) this.drawSource(cur, curClip, t, fx, env, curRect);
+      // Transition : simple fondu d'opacité, « par le noir » (l'ancienne descend puis la nouvelle monte), ou effet géométrique
+      // (volet, glisser, iris, zoom) calculé par le shader ; un clip qui arrive sur un calque vide ou qui le quitte fond toujours.
+      const both = !!(rt.prev && rt.cur), code = both ? transitionCode(rt.tr) : 0;
+      let aOut = 1 - t, aIn = t;
+      if (both && rt.tr === 'dip') { aOut = Math.max(0, 1 - 2 * t); aIn = Math.max(0, 2 * t - 1); }
+      else if (code && code !== 5) { aOut = 1; aIn = 1; }
+      const trOut = code && t < 1 ? { code, t, in: false } : null, trIn = code && t < 1 ? { code, t, in: true } : null;
+      if (prev && prev.src.ready && rt.prev && t < 1 && aOut > 0) this.drawSource(prev, prevClip, aOut, fx, env, prevRect, trOut);
+      if (cur && cur.src.ready && t > 0 && aIn > 0) this.drawSource(cur, curClip, aIn, fx, env, curRect, trIn);
 
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.compT.fbo);
       gl.viewport(0, 0, this.cw, this.ch);

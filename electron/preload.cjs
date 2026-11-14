@@ -15,4 +15,8 @@ contextBridge.exposeInMainWorld('regieDesktop', {
   onDisplaysChanged: cb => ipcRenderer.on('regie:displays-changed', () => cb()),
   /** Processeur (%), mémoire (Mo) de toute l'application et état thermique : { cpu, mem, gpu, thermal }. */
   metrics: () => ipcRenderer.invoke('regie:metrics'),
+  /** Fiche de l'ordinateur (système, écrans, carte graphique, réglages) pour l'enregistreur de diagnostic. */
+  machineInfo: () => ipcRenderer.invoke('regie:machine-info'),
+  /** Ouvre le dossier des journaux de diagnostic (data/journaux). */
+  openJournals: () => ipcRenderer.send('regie:open-journals'),
 });

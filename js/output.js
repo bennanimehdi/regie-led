@@ -18,6 +18,9 @@ let eng;
 try { eng = new Engine({ role: 'output' }); }
 catch (e) { hint.textContent = e.message; throw e; }
 document.body.prepend(eng.canvas);
+/* Enregistreur de diagnostic : les événements des vidéos de cette sortie partent avec le statut de chaque seconde. */
+const evq = [];
+eng.note = m => { if (evq.length < 60) evq.push([Date.now(), m]); };
 
 const bc = new BroadcastChannel('regie-led');
 let state = null;
@@ -122,7 +125,7 @@ function loop() {
 requestAnimationFrame(loop);
 
 setInterval(() => bc.postMessage({
-  t: 'status', out: outId, w: Math.round(innerWidth * devicePixelRatio), h: Math.round(innerHeight * devicePixelRatio), health: healthSample(),
+  t: 'status', out: outId, w: Math.round(innerWidth * devicePixelRatio), h: Math.round(innerHeight * devicePixelRatio), health: healthSample(), ev: evq.splice(0),
   fs: isFs(), fps: eng.fps, audioBlocked: !!eng.audioBlocked, cameraError: eng.cameraError || '',
   v: version, noCapture: missingCapture(), linked: !!window.opener,
   via: liveScreens().map(id => (directStream(id) ? 'direct' : window.__ledRemote?.[id] ? 'relais' : 'rien')).join(','), rtc: relay.states().join(' '),

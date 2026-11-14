@@ -27,7 +27,7 @@ const prep = { layers: {}, blackout: false, test: false, cue: -1, beat0: Date.no
 const TYPE_TAG = { video: 'VID', image: 'IMG', slideshow: 'DIAPO', camera: 'CAM', screen: 'DIR', doc: 'DOC', text: 'TXT', gen: 'FX' };
 const TYPE_NAME = { video: 'Vidéo', image: 'Image', slideshow: 'Diaporama', camera: 'Caméra', screen: 'Fenêtre en direct', doc: 'Document', text: 'Texte', gen: 'Effet visuel' };
 // Médiathèque : fichiers sélectionnés (cases à cocher, clic, Maj/⌘-clic) pour supprimer, poser dans la grille ou faire un diaporama.
-let libSel = new Set(), libLast = null;
+let libSel = new Set(), libLast = null, libDragKeys = null;   // libDragKeys : fichiers en cours de glisser dans la médiathèque (réordonnancement)
 let docList = [];                         // documents à pages (PDF, Word, Excel…) gardés par la régie
 let pres = [];                            // PowerPoint « en direct » gardés par la régie (affichés en tête de médiathèque)
 let mediaAll = [], presAll = [], docAll = [];   // tout ce que le serveur a (media, pres, docList = la partie visible dans ce show, voir filterFiles)
@@ -94,7 +94,7 @@ function restoreLive() {
       l.sceneId = M.sceneById(show, s.live.sceneId) ? s.live.sceneId : show.sceneId;
       for (const layer of M.layersFor(show, l)) {
         const L = s.live.layers[layer.id];
-        if (L?.clipId && show.clips[L.clipId]) l.layers[layer.id] = { clipId: L.clipId, t0: +L.t0 || Date.now(), fade: L.fade, ...(L.pausedAt ? { pausedAt: +L.pausedAt } : {}) };
+        if (L?.clipId && show.clips[L.clipId]) l.layers[layer.id] = { clipId: L.clipId, t0: +L.t0 || Date.now(), fade: L.fade, ...(L.tr ? { tr: L.tr } : {}), ...(L.pausedAt ? { pausedAt: +L.pausedAt } : {}) };
       }
       l.cue = Number.isInteger(s.live.cue) && s.live.cue < show.cues.length ? s.live.cue : -1;
       l.mute = !!s.live.mute;                                // son coupé : il le reste après un rechargement
@@ -163,7 +163,8 @@ function take() {
     const want = clipOn(prep.layers, l.id), ok = want && show.clips[want] ? want : null;
     if (ok === clipOn(live.layers, l.id) && !live.layers[l.id]?.pausedAt) continue;   // déjà à la sortie : on ne relance pas (sauf s'il attend, en pause)
     const f = show.take?.mode === 'cut' ? 0 : (show.take?.dur ?? prep.layers[l.id]?.fade);      // transition choisie sous le bouton « Envoyer »
-    live.layers[l.id] = { clipId: ok, t0: now, ...(f != null ? { fade: f } : {}) }; n++;
+    const tr = show.take?.mode && show.take.mode !== 'cut' && show.take.mode !== 'fade' ? show.take.mode : null;
+    live.layers[l.id] = { clipId: ok, t0: now, ...(f != null ? { fade: f } : {}), ...(tr ? { tr } : {}) }; n++;
     if (prep.layers[l.id]) prep.layers[l.id] = { ...prep.layers[l.id], t0: now, pausedAt: undefined };   // la préparation se cale sur le mur : même départ (vidéo, compte à rebours)
   }
   if (prepCue != null && show.cues[prepCue]) {
@@ -446,6 +447,26 @@ function renameFileKey(from, to) {
   if (!perShowFiles() || from === to) return;
   const i = show.files.indexOf(from); if (i >= 0) { show.files[i] = to; commit(); }
   filterFiles();
+}
+/* Ordre de la médiathèque : celui de show.files (show par show), ou show.libOrder pour un show ancien. Les fichiers qui n'y
+ * sont pas encore (show ancien, fichier tout juste copié dans le dossier) viennent après, dans l'ordre du dossier. */
+const libOrderKeys = () => (perShowFiles() ? show.files : (show.libOrder ||= []));
+function libSorted() {
+  const items = [...pres.map(p => ({ k: fileKeyPpt(p), p })), ...docList.map(d => ({ k: fileKeyDoc(d), d })), ...media.map(m => ({ k: m.name, m }))];
+  const pos = new Map(libOrderKeys().map((k, i) => [k, i]));
+  return items.map((x, i) => ({ ...x, o: pos.has(x.k) ? pos.get(x.k) : 1e6 + i })).sort((a, b) => a.o - b.o);
+}
+/** Déplace des fichiers (clés) juste avant `beforeKey` (null = à la fin) dans l'ordre de la médiathèque. */
+function moveFiles(keys, beforeKey) {
+  const cur = libSorted().map(x => x.k), moving = cur.filter(k => keys.includes(k));
+  if (!moving.length) return;
+  const rest = cur.filter(k => !keys.includes(k));
+  let at = beforeKey == null ? rest.length : rest.indexOf(beforeKey);
+  if (at < 0) at = rest.length;
+  rest.splice(at, 0, ...moving);
+  if (perShowFiles()) { const others = show.files.filter(k => !rest.includes(k)); show.files = [...rest, ...others]; }   // les sources en direct (cam:) gardent leur place, à la fin
+  else show.libOrder = rest;
+  commit(); renderLib();
 }
 /* ---------- documents à pages (PDF, Word, Excel, PowerPoint en images) ---------- */
 const docClip = d => M.newClip('doc', { name: baseName(d.name), doc: d.id, pages: d.pages, page: 0 });
@@ -1207,7 +1228,7 @@ function renderLib() {
         <button data-new="gen"><b>Effet visuel</b></button>
       </div></div></div>
     <div id="lib-selbar"></div>
-    <div class="lib-list">${poolSec}${cams}<div class="lib-sec"><span>Fichiers</span></div>${media.length || pres.length || docList.length ? pres.map(presItem).join('') + docList.map(docItem).join('') + media.map(item).join('') : `<p class="empty">${perShowFiles() ? 'La médiathèque de ce show est vide.' : 'Aucun média pour l\'instant.'}<br>Clique sur « Importer » ou glisse ici tes vidéos (mp4, mov, webm), tes images, ou un PowerPoint, Word, Excel ou PDF.${perShowFiles() && mediaAll.length + presAll.length + docAll.length ? '<br>« Importer → Fichiers déjà importés… » reprend un fichier déjà sur cet ordinateur.' : ''}</p>`}</div>
+    <div class="lib-list">${poolSec}${cams}<div class="lib-sec"><span>Fichiers</span></div>${media.length || pres.length || docList.length ? libSorted().map(x => (x.p ? presItem(x.p) : x.d ? docItem(x.d) : item(x.m))).join('') : `<p class="empty">${perShowFiles() ? 'La médiathèque de ce show est vide.' : 'Aucun média pour l\'instant.'}<br>Clique sur « Importer » ou glisse ici tes vidéos (mp4, mov, webm), tes images, ou un PowerPoint, Word, Excel ou PDF.${perShowFiles() && mediaAll.length + presAll.length + docAll.length ? '<br>« Importer → Fichiers déjà importés… » reprend un fichier déjà sur cet ordinateur.' : ''}</p>`}</div>
     <div class="lib-foot"><button class="btn sm" data-act="open-folder">Ouvrir le dossier</button><button class="btn sm" data-act="sel-all" title="Tout sélectionner">☑ Tout</button><button class="btn sm" data-act="refresh" title="Relire le dossier">↻</button></div>`;
   refreshLibSel(); attachLiveThumbs();
 }
@@ -1215,7 +1236,7 @@ function renderLib() {
 /** Clé de sélection d'une ligne de la médiathèque : nom du média, « doc:<id> » ou « ppt:<nom> » (les mêmes clés que show.files). */
 const libKey = el => (el?.dataset.media != null ? el.dataset.media : el?.dataset.doc != null ? 'doc:' + el.dataset.doc : el?.dataset.ppt != null ? 'ppt:' + el.dataset.ppt : null);
 /** Tous les fichiers de la médiathèque, dans l'ordre affiché (pour « Tout » et Maj-clic). */
-const libOrder = () => [...pres.map(fileKeyPpt), ...docList.map(fileKeyDoc), ...media.map(m => m.name)];
+const libOrder = () => libSorted().map(x => x.k);
 function refreshLibSel() {
   const all = new Set(libOrder());
   for (const n of [...libSel]) if (!all.has(n)) libSel.delete(n);
@@ -1431,7 +1452,7 @@ function bindLib() {
     if (act || nw) return;
     // Sélection : case à cocher = ajoute/retire ; clic = ce fichier seul ; ⌘/Ctrl-clic = ajoute/retire ; Maj-clic = plage.
     const ck = e.target.closest('[data-ck]')?.dataset.ck, it = libKey(e.target.closest('.lib-item'));
-    if (it == null) return;
+    if (it == null) { if (libSel.size && !e.target.closest('.lib-item, button, input, select, label, a, .lib-menu')) { libSel.clear(); refreshLibSel(); } return; }   // clic dans le vide : on désélectionne
     if (ck || e.metaKey || e.ctrlKey) { if (libSel.has(it)) libSel.delete(it); else libSel.add(it); }
     else if (e.shiftKey && libLast) {
       const order = libOrder(), a = order.indexOf(libLast), b = order.indexOf(it);
@@ -1470,14 +1491,43 @@ function bindLib() {
     if (camDrag) { e.dataTransfer.setData('application/x-led-cam', camDrag); e.dataTransfer.effectAllowed = 'copy'; }
     const docDrag = e.target.closest('.lib-item')?.dataset.doc;
     if (docDrag) { e.dataTransfer.setData('application/x-led-doc', docDrag); e.dataTransfer.effectAllowed = 'copy'; }
+    // Glisser pour réordonner : la ligne (ou toute la sélection si elle en fait partie) ; un dépôt sur la grille reste une copie.
+    const dk = libKey(e.target.closest('.lib-item'));
+    libDragKeys = dk == null ? null : libSel.has(dk) ? libOrder().filter(k => libSel.has(k)) : [dk];
+    if (dk != null) e.dataTransfer.effectAllowed = 'copyMove';
     if (!name) return;
-    e.dataTransfer.setData('application/x-led-media', name); e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('application/x-led-media', name); e.dataTransfer.effectAllowed = 'copyMove';
     // Plusieurs fichiers sélectionnés : on les glisse tous (déposés sur une case → diaporama ; sur un diaporama → ajoutés).
     if (libSel.has(name) && libSel.size > 1) e.dataTransfer.setData('application/x-led-media-list', JSON.stringify(media.filter(m => libSel.has(m.name)).map(m => m.name)));
   });
-  lib.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); lib.classList.add('drop'); } });
-  lib.addEventListener('dragleave', () => lib.classList.remove('drop'));
-  lib.addEventListener('drop', e => { lib.classList.remove('drop'); if (e.dataTransfer.files.length) { e.preventDefault(); uploadFiles(e.dataTransfer.files); } });
+  const clearMark = () => $$('#lib .lib-item.mv-before, #lib .lib-item.mv-after').forEach(x => x.classList.remove('mv-before', 'mv-after'));
+  /** Ligne visée pendant un glisser de réordonnancement : { el, key, after } (au-dessus / en dessous du milieu de la ligne). */
+  const reorderTarget = e => {
+    const el = e.target.closest('.lib-item'), key = libKey(el);
+    if (key == null) return null;
+    const r = el.getBoundingClientRect();
+    return { el, key, after: e.clientY > r.top + r.height / 2 };
+  };
+  lib.addEventListener('dragover', e => {
+    if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); lib.classList.add('drop'); return; }
+    if (!libDragKeys) return;
+    const t = reorderTarget(e); clearMark();
+    if (!t || libDragKeys.includes(t.key)) return;
+    e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+    t.el.classList.add(t.after ? 'mv-after' : 'mv-before');
+  });
+  lib.addEventListener('dragleave', e => { lib.classList.remove('drop'); if (!lib.contains(e.relatedTarget)) clearMark(); });
+  lib.addEventListener('dragend', () => { libDragKeys = null; clearMark(); });
+  lib.addEventListener('drop', e => {
+    lib.classList.remove('drop'); clearMark();
+    if (e.dataTransfer.files.length) { e.preventDefault(); return uploadFiles(e.dataTransfer.files); }
+    const t = libDragKeys && reorderTarget(e);
+    if (!t || libDragKeys.includes(t.key)) return;
+    e.preventDefault();
+    const order = libOrder().filter(k => !libDragKeys.includes(k)), i = order.indexOf(t.key);
+    moveFiles(libDragKeys, t.after ? (order[i + 1] ?? null) : t.key);
+    libDragKeys = null;
+  });
   $('#file-input').addEventListener('change', e => { if (e.target.files.length) uploadFiles(e.target.files); e.target.value = ''; });
 }
 
@@ -1539,9 +1589,10 @@ function updatePlaying() {
   // Panneau à côté des écrans, volontairement réduit : « Envoyer » et « Tout arrêter ». (Mode Préparation et Mire : Réglages / Mapping.)
   const pending = prepOn && prepDiffers();
   const tk = show.take || { mode: 'fade', dur: 0.5 }, cut = tk.mode === 'cut';
-  $('#mon-side').innerHTML = `${prepOn ? `<button class="btn take${pending ? ' pending' : ''}" data-act="take" title="Envoie à la sortie ce qui est préparé (touche Entrée) — ${cut ? 'coupure franche' : 'fondu de ' + String(tk.dur).replace('.', ',') + ' s'}">Envoyer à la sortie ▶<small>Entrée · ${cut ? 'coupure' : 'fondu ' + String(tk.dur).replace('.', ',') + ' s'}</small></button>
-    <div class="take-tr"><div class="seg"><button class="${cut ? '' : 'on'}" data-act="tr-fade" title="Fondu enchaîné entre l'ancienne et la nouvelle image">Fondu</button><button class="${cut ? 'on' : ''}" data-act="tr-cut" title="Changement instantané, sans fondu">Coupure</button></div>
-      <label class="tr-dur" title="Durée du fondu (secondes)"><input type="number" id="tr-dur" min="0" max="10" step="0.1" value="${tk.dur}"${cut ? ' disabled' : ''}> s</label></div>` : ''}
+  const trName = (M.TRANSITIONS.find(t => t.id === tk.mode) || M.TRANSITIONS[0]).name, durTxt = String(tk.dur).replace('.', ',') + ' s';
+  $('#mon-side').innerHTML = `${prepOn ? `<button class="btn take${pending ? ' pending' : ''}" data-act="take" title="Envoie à la sortie ce qui est préparé (touche Entrée) — ${cut ? 'coupure franche' : trName.toLowerCase() + ', ' + durTxt}">Envoyer à la sortie ▶<small>Entrée · ${cut ? 'coupure' : esc(trName.toLowerCase()) + ' ' + durTxt}</small></button>
+    <div class="take-tr"><select id="tr-mode" class="tr-mode" title="${esc((M.TRANSITIONS.find(t => t.id === tk.mode) || M.TRANSITIONS[0]).hint)}">${M.TRANSITIONS.map(t => `<option value="${t.id}"${tk.mode === t.id ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}</select>
+      <label class="tr-dur" title="Durée de la transition (secondes)"><input type="number" id="tr-dur" min="0" max="10" step="0.1" value="${tk.dur}"${cut ? ' disabled' : ''}> s</label></div>` : ''}
     <div class="mon-btns"><button class="btn sm" data-act="stop-all">■ Tout arrêter</button>
     <label class="chk" title="Affiche la barre Formes (ajouter, dessiner, fusionner des formes) sous les écrans"><input type="checkbox" id="shapebar-on"${shapeBarOn ? ' checked' : ''}> Formes</label></div>`;
   $('#mon-tag').textContent = live.test ? 'MIRE' : live.blackout ? 'NOIR' : '';
@@ -1696,8 +1747,9 @@ function bindGrid() {
   });
   $('#mon-outsel')?.addEventListener('change', e => { monOut = e.target.value; renderOutSel(); });
   $('#mon-side').addEventListener('change', e => {
+    if (e.target.id === 'tr-mode') { show.take = { ...(show.take || { dur: 0.5 }), mode: e.target.value }; commit(); updatePlaying(); return; }   // transition de « Envoyer »
     if (e.target.id === 'tr-dur') {                          // durée du fondu de « Envoyer »
-      show.take = { ...(show.take || {}), mode: 'fade', dur: M.clamp(Math.round((+e.target.value || 0) * 10) / 10, 0, 10) };
+      show.take = { ...(show.take || {}), mode: show.take?.mode && show.take.mode !== 'cut' ? show.take.mode : 'fade', dur: M.clamp(Math.round((+e.target.value || 0) * 10) / 10, 0, 10) };
       commit(); updatePlaying(); return;
     }
     if (e.target.id !== 'shapebar-on') return;
@@ -2373,6 +2425,7 @@ function healthUpdate() {
   if (lvl !== healthLevel) {
     const cause = [...outs.filter(x => x.r && x.r.lvl !== 'ok').map(x => x.o.name + ' : ' + x.r.why.join(', ')), ...mach.why].join(' · ') || 'tout est revenu à la normale';
     healthLog.unshift({ t: Date.now(), lvl, cause }); healthLog.length = Math.min(healthLog.length, 100);
+    jrAdd('sante', { lvl, cause });
     if (lvl === 'bad') toast('⚠ Santé : ' + cause, 'err');
     healthLevel = lvl;
   }
@@ -2393,8 +2446,83 @@ function renderHealthPanel(outs, mach) {
     <div class="hp-out ${mach.lvl}"><div class="hp-row"><i></i><b>Ordinateur</b><span>${machine ? LBL[mach.lvl] : 'disponible dans l\'application Régie LED'}</span></div>
       ${machine ? `<div class="hp-num"><span>processeur <b>${machine.cpu} %</b></span><span>mémoire <b>${(machine.mem / 1024).toFixed(1)} Go</b></span><span>chaleur <b>${({ nominal: 'normale', fair: 'correcte', serious: 'élevée', critical: 'critique' })[machine.thermal] || '–'}</b></span><span>régie ${regieFps} i/s</span></div>${mach.why.length ? `<p class="hp-why">${esc(mach.why.join(' · '))}</p>` : ''}` : `<div class="hp-num"><span>régie ${regieFps} i/s</span></div>`}</div>
     <div class="hp-log"><b>Journal</b>${healthLog.length ? healthLog.slice(0, 15).map(e => `<div class="${e.lvl}"><time>${new Date(e.t).toLocaleTimeString('fr-FR')}</time> ${esc(e.cause)}</div>`).join('') : '<div class="ok">Rien à signaler depuis l\'ouverture de la régie.</div>'}</div>
+    <div class="hp-jr"><b>Enregistreur de diagnostic</b><span>Tout est noté (clics, touches, vidéos, mesures chaque seconde, batterie) dans un fichier à envoyer pour analyse.</span>
+      <div class="row"><a class="btn sm gold" href="/api/journal?id=${jr.id}" download="journal-regie-${jr.id}.jsonl" data-act="jr-save">⤓ Enregistrer le journal</a>${window.regieDesktop?.openJournals ? '<button class="btn sm" data-act="jr-folder">📂 Dossier des journaux</button>' : ''}</div></div>
+    <span class="hp-grip" title="Tire pour agrandir ou réduire le panneau (double-clic : taille d'origine)"></span>
     <p class="note">Orange ou rouge : vidéo trop lourde (convertis-la en MP4 H.264 1080p), ordinateur trop chaud ou sur batterie, trop de sorties ouvertes. La vignette Outputs et chaque sortie secondaire décodent aussi les vidéos.</p>`;
 }
+/* ---------- enregistreur de diagnostic ----------
+ * Pour analyser un problème sans être devant l'ordinateur : tout ce qui se passe est noté dans data/journaux/<date>.jsonl
+ * (une ligne JSON par événement) — fiche de l'ordinateur au début, puis clics, touches, réglages modifiés, clips à l'antenne,
+ * événements des vidéos de chaque sortie (attente de données, bouclage, relance), changements de Santé, et chaque seconde une
+ * mesure (images/s, saccades, images perdues, processeur, mémoire, batterie, régie au premier plan ou non). Rien ne quitte
+ * l'ordinateur : le fichier s'enregistre depuis le panneau Santé. */
+const jr = { id: new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-'), q: [], live: '', battery: null };
+function jrAdd(k, d) { if (jr.q.length < 5000) jr.q.push({ t: new Date().toISOString().slice(11, 23), k, ...d }); }
+function jrFlush(beacon) {
+  if (!jr.q.length) return;
+  const body = jr.q.splice(0).map(e => JSON.stringify(e)).join('\n') + '\n', url = '/api/journal?id=' + jr.id;
+  if (beacon && navigator.sendBeacon) { navigator.sendBeacon(url, new Blob([body], { type: 'text/plain' })); return; }
+  fetch(url, { method: 'POST', body, keepalive: body.length < 60000 }).catch(() => {});
+}
+function jrOutEvents(m) { for (const [t, msg] of m.ev || []) jr.q.push({ t: new Date(t).toISOString().slice(11, 23), k: 'video', out: m.out || 'main', msg }); }
+/** Ce qu'il y a sous un clic : bouton, case de clip, onglet… en quelques mots. */
+function jrDescribe(el) {
+  const cell = el.closest('.cell[data-clip]');
+  if (cell) { const c = show.clips[cell.dataset.clip]; return 'clip « ' + (c?.name || cell.dataset.clip) + ' »' + (el.closest('.cell') === el ? '' : ' (' + (el.title || el.textContent || '').trim().slice(0, 30) + ')'); }
+  const b = el.closest('button, a, [data-act], [data-tab], label, select, input, .g-col, [role="button"], li, .np');
+  if (!b) return null;
+  const txt = (b.getAttribute('aria-label') || b.textContent || b.title || b.value || '').replace(/\s+/g, ' ').trim().slice(0, 50);
+  return [b.dataset.act && 'act=' + b.dataset.act, b.id && '#' + b.id, txt && '« ' + txt + ' »'].filter(Boolean).join(' ') || b.tagName.toLowerCase();
+}
+function jrLiveSummary() {
+  try {
+    const L = Object.entries(live.layers || {}).filter(([, v]) => v?.clipId).map(([l, v]) => `${show.layers.find(x => x.id === l)?.name || l}: ${show.clips[v.clipId]?.name || v.clipId}${v.pausedAt ? ' (pause)' : ''}`);
+    return L.join(' | ') + (live.cue >= 0 ? ` · séquence ${live.cue + 1}` : '') + (live.blackout ? ' · NOIR' : '') + (live.test ? ' · MIRE' : '') + (live.mute ? ' · son coupé' : '');
+  } catch { return ''; }
+}
+function jrSample() {
+  const outs = {};
+  for (const o of show.outputs) {
+    const inf = o.id === 'main' ? outInfo : outInfos[o.id];
+    if (!outIsOpen(o.id) || !inf) continue;
+    const h = inf.health || {};
+    outs[o.name || o.id] = { fps: inf.fps, late: h.late, drop: h.dropped, max: h.maxMs, vid: h.videos, heap: h.heap, ...(h.hidden ? { cachee: true } : {}), ...(h.heavy?.length ? { lourdes: h.heavy } : {}) };
+  }
+  const m = machine ? { cpu: machine.cpu, gpuCpu: machine.gpuCpu, mem: machine.mem, chaleur: machine.thermal, ...(machine.onBattery != null ? { surBatterie: machine.onBattery } : {}) } : {};
+  const b = jr.battery ? { batt: Math.round(jr.battery.level * 100), secteur: jr.battery.charging } : {};
+  jrAdd('mesure', { outs, ...m, ...b, regie: regieFps, ...(document.visibilityState !== 'visible' ? { regieCachee: true } : {}), ...(document.hasFocus() ? {} : { autreAppli: true }), onglet: tab });
+  const ls = jrLiveSummary();
+  if (ls !== jr.live) { jr.live = ls; jrAdd('antenne', { live: ls || '(rien)' }); }
+}
+function jrStart() {
+  jrAdd('debut', { ua: navigator.userAgent, ecran: `${screen.width}×${screen.height} ×${devicePixelRatio}`, show: show.name || '', clips: Object.keys(show.clips || {}).length, sorties: show.outputs.map(o => `${o.name} (${o.mode || 'principale'})`) });
+  window.regieDesktop?.machineInfo?.().then(info => jrAdd('ordinateur', info)).catch(() => {});
+  navigator.getBattery?.().then(b => {
+    jr.battery = b;
+    const note = () => jrAdd('batterie', { niveau: Math.round(b.level * 100), secteur: b.charging });
+    note(); b.addEventListener('chargingchange', note);
+  }).catch(() => {});
+  document.addEventListener('click', e => { const d = jrDescribe(e.target); if (d) jrAdd('clic', { sur: d, ...(e.shiftKey ? { maj: true } : {}) }); }, true);
+  document.addEventListener('change', e => {
+    const el = e.target; if (!el.matches?.('input, select, textarea') || el.type === 'password') return;
+    const name = el.id || el.name || el.dataset.k || el.closest('label')?.textContent?.trim().slice(0, 30) || el.tagName.toLowerCase();
+    jrAdd('reglage', { champ: name, valeur: el.type === 'checkbox' ? el.checked : String(el.value).slice(0, 60) });
+  }, true);
+  document.addEventListener('keydown', e => {
+    if (e.repeat || e.target.closest?.('input, textarea, [contenteditable]')) return;     // pas de frappe de texte
+    jrAdd('touche', { code: e.code, ...(e.ctrlKey || e.metaKey ? { ctrl: true } : {}), ...(e.shiftKey ? { maj: true } : {}), ...(e.altKey ? { alt: true } : {}) });
+  }, true);
+  document.addEventListener('visibilitychange', () => jrAdd('fenetre', { regie: document.visibilityState }));
+  addEventListener('blur', () => jrAdd('fenetre', { regie: 'quitte le premier plan' }));
+  addEventListener('focus', () => jrAdd('fenetre', { regie: 'revient au premier plan' }));
+  addEventListener('error', e => jrAdd('erreur', { msg: String(e.message).slice(0, 200), ou: `${e.filename?.split('/').pop()}:${e.lineno}` }));
+  addEventListener('unhandledrejection', e => jrAdd('erreur', { msg: String(e.reason?.message || e.reason).slice(0, 200) }));
+  addEventListener('pagehide', () => { jrAdd('fin', {}); jrFlush(true); });
+  setInterval(() => { healthMachine(); jrSample(); }, 1000);
+  setInterval(() => jrFlush(), 5000);
+}
+
 /* ---------- raccourcis clavier personnalisés (show.keys) ---------- */
 const KEY_ACTIONS = [
   ['clip', 'Lancer un clip'], ['col', 'Afficher une colonne'], ['take', 'Envoyer la préparation à la sortie'], ['next', 'Séquence suivante'],
@@ -2650,8 +2778,31 @@ function bindTop() {
   $('#master').addEventListener('input', e => { show.master.opacity = +e.target.value; commit(); });
   $('#blackout').addEventListener('click', toggleBlackout);
   $('#audio-mute').addEventListener('click', toggleAudioMute);
-  $('#health').addEventListener('click', () => { const p = $('#health-panel'); p.hidden = !p.hidden; if (!p.hidden) renderHealthPanel(); });
-  $('#health-panel').addEventListener('click', e => { if (e.target.closest('[data-act="health-close"]')) $('#health-panel').hidden = true; });
+  $('#health').addEventListener('click', () => {
+    const p = $('#health-panel'); p.hidden = !p.hidden; if (p.hidden) return;
+    renderHealthPanel();                                              // panneau collé au bord droit : on peut le laisser ouvert en travaillant
+  });
+  // Taille du panneau Santé réglable avec la poignée du coin bas-gauche (le panneau reste collé à droite), mémorisée.
+  const hpSize = sz => { const p = $('#health-panel'); p.style.width = sz ? sz.w + 'px' : ''; p.style.height = sz ? sz.h + 'px' : ''; p.style.maxHeight = sz ? 'none' : ''; };
+  try { hpSize(JSON.parse(localStorage.getItem('regieLed.healthSize'))); } catch { /* taille d'origine */ }
+  $('#health-panel').addEventListener('pointerdown', e => {
+    if (!e.target.closest('.hp-grip')) return;
+    e.preventDefault();
+    const p = $('#health-panel'), r = p.getBoundingClientRect(), x0 = e.clientX, y0 = e.clientY;
+    let sz = null;
+    const move = ev => {
+      sz = { w: Math.round(Math.min(innerWidth - 24, Math.max(300, r.width + x0 - ev.clientX))), h: Math.round(Math.min(innerHeight - 70, Math.max(180, r.height + ev.clientY - y0))) };
+      hpSize(sz);
+    };
+    const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); if (sz) try { localStorage.setItem('regieLed.healthSize', JSON.stringify(sz)); } catch { /* sans gravité */ } };
+    addEventListener('pointermove', move); addEventListener('pointerup', up);
+  });
+  $('#health-panel').addEventListener('dblclick', e => { if (e.target.closest('.hp-grip')) { hpSize(null); try { localStorage.removeItem('regieLed.healthSize'); } catch { /* sans gravité */ } } });
+  $('#health-panel').addEventListener('click', e => {
+    if (e.target.closest('[data-act="health-close"]')) $('#health-panel').hidden = true;
+    if (e.target.closest('[data-act="jr-save"]')) jrFlush();                    // le fichier contient tout jusqu'à maintenant
+    if (e.target.closest('[data-act="jr-folder"]')) { jrFlush(); window.regieDesktop.openJournals(); }
+  });
   $('#open-out').addEventListener('click', openOutput);
   $('#out-fix').addEventListener('click', async () => {
     if (!refreshOutput()) await openOutput();          // la recharger sur place, sinon en ouvrir une neuve
@@ -3746,10 +3897,10 @@ async function boot() {
     const m = e.data;
     if (m.t === 'hello') push();
     else if (m.t === 'levels') { levels = m.l || {}; levelsAt = Date.now(); levelsRun = !!m.run; }
-    else if (m.t === 'status' && m.out && m.out !== 'main') { outInfos[m.out] = { ...m, seen: Date.now() }; }
+    else if (m.t === 'status' && m.out && m.out !== 'main') { outInfos[m.out] = { ...m, seen: Date.now() }; jrOutEvents(m); }
     else if (m.t === 'bye' && m.out && m.out !== 'main') { delete outInfos[m.out]; }
     else if (m.t === 'status') {
-      outInfo = m; outSeen = Date.now();
+      outInfo = m; outSeen = Date.now(); jrOutEvents(m);
       // Fenêtre de sortie restée sur un code trop ancien pour se recharger seule : la régie la recharge elle-même si elle peut l'atteindre.
       if (m.v === undefined) {
         staleSeen = Date.now();
@@ -3774,6 +3925,7 @@ async function boot() {
   await loadMedia();
   window.regieDesktop?.onUpdate?.(m => toast(m.text));                 // application de bureau : mise à jour disponible ou prête
   fetch('/api/version').then(r => r.json()).then(j => { appVersion = j.v || 0; }).catch(() => {});
+  jrStart();
   setInterval(() => {                       // dépannage : état de la régie, lisible sur le serveur local (/api/diag)
     const streams = Object.fromEntries(Object.entries(window.__ledStreams).map(([id, s]) => { const t = s.getVideoTracks()[0]; return [id, { active: s.active, label: t?.label, state: t?.readyState, muted: t?.muted, size: t ? t.getSettings().width + 'x' + t.getSettings().height : '' }]; }));
     fetch('/api/diag?who=regie', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({

@@ -5,6 +5,8 @@ import { hexToRgb } from './model.js';
 class Base {
   constructor(eng, clip) { this.eng = eng; this.gl = eng.gl; this.clip = clip; this.tex = eng.newTex(); this.w = 0; this.h = 0; this.ready = false; this.t0 = Date.now(); }
   setClip(clip) { this.clip = clip; }
+  /** Événement pour l'enregistreur de diagnostic (seule la fenêtre de sortie définit eng.note). */
+  note(what, detail) { this.eng.note?.(`« ${this.clip?.name || String(this.clip?.src || '').split('/').pop() || 'vidéo'} » ${what}${detail ? ' ' + detail : ''}`); }
   start(t0) { this.t0 = t0; }
   update() {}
   upload(el) {
@@ -71,7 +73,13 @@ class VideoSource extends Base {
       else if (this.loops()) { v.currentTime = this.seg().a; this.play(); }        // boucle avec un point de début : on repart de là
     });
     v.addEventListener('loadedmetadata', () => { if (this.lateSeek) this.seekLate(); });
-    v.addEventListener('error', () => { this.error = true; });
+    v.addEventListener('error', () => { this.error = true; this.note('erreur de lecture', v.error?.message || v.error?.code || ''); });
+    // Enregistreur de diagnostic (fenêtre de sortie seulement) : attentes de données, reprises, bouclages.
+    v.addEventListener('waiting', () => this.note('attend des données', `à ${v.currentTime.toFixed(2)} s`));
+    v.addEventListener('stalled', () => this.note('téléchargement bloqué', `à ${v.currentTime.toFixed(2)} s`));
+    v.addEventListener('seeking', () => { if (this.wasNearEnd) this.note('bouclage', `retour à ${v.currentTime.toFixed(2)} s`); });
+    v.addEventListener('timeupdate', () => { const d = v.duration; this.wasNearEnd = isFinite(d) && d > 0 && v.currentTime > d - 0.6; });
+    v.addEventListener('ended', () => this.note('fin de la vidéo', ''));
     this.kicks = 0; this.stuckAt = 0;
     this.watchFrames(v);
     this.setClip(clip);
@@ -146,7 +154,7 @@ class VideoSource extends Base {
     const now = performance.now();
     if (this.held || this.pausedAt || v.ended || this.frozen()) { this.stuckAt = 0; return; }
     if (v.paused) {                                                       // lecture refusée ou interrompue : on relance (au plus toutes les 1,5 s)
-      if (now - (this.kickAt || 0) > 1500) { this.kickAt = now; if (this.kicks++ >= 1) console.warn(`Vidéo « ${this.clip.name || this.clip.src} » en pause à la sortie : relance`); this.play(); }
+      if (now - (this.kickAt || 0) > 1500) { this.kickAt = now; if (this.kicks++ >= 1) console.warn(`Vidéo « ${this.clip.name || this.clip.src} » en pause à la sortie : relance`); this.note('en pause : relancée', ''); this.play(); }
       return;
     }
     this.kicks = 0;
@@ -155,6 +163,7 @@ class VideoSource extends Base {
     if (now - this.stuckAt > 2500 && now - (this.nudgeAt || 0) > 4000) {   // image figée depuis 2,5 s alors qu'elle joue : on la décoince
       this.nudgeAt = now; this.stuckAt = now;
       console.warn(`Vidéo « ${this.clip.name || this.clip.src} » figée à la sortie (${v.videoWidth}×${v.videoHeight}, état ${v.readyState}) : relance`);
+      this.note('figée 2,5 s : décoincée', `(${v.videoWidth}×${v.videoHeight}, état ${v.readyState})`);
       try { v.currentTime = v.currentTime + 0.04; } catch { /* sans gravité */ }
       this.play();
     }

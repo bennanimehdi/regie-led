@@ -4,6 +4,7 @@
  * dans le menu Sortie). Les shows et les médias de l'application installée vivent dans « Documents/Régie LED ». */
 import { app, BrowserWindow, screen, session, desktopCapturer, shell, ipcMain, Menu, dialog, nativeImage, Notification, powerMonitor } from 'electron';
 import path from 'node:path';
+import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import log from 'electron-log/main';
@@ -196,8 +197,10 @@ let preferCap = null;
 ipcMain.handle('regie:metrics', () => {
   const m = app.getAppMetrics();
   let thermal = 'unknown'; try { thermal = powerMonitor.getCurrentThermalState?.() || 'unknown'; } catch { /* pas sur ce système */ }
+  let battery = null; try { battery = powerMonitor.isOnBatteryPower?.() ?? null; } catch { /* pas sur ce système */ }
   return { cpu: Math.round(m.reduce((a, x) => a + (x.cpu?.percentCPUUsage || 0), 0)), mem: Math.round(m.reduce((a, x) => a + (x.memory?.workingSetSize || 0), 0) / 1024),
-    gpu: Math.round((m.find(x => x.type === 'GPU')?.memory?.workingSetSize || 0) / 1024), thermal, cores: (globalThis.navigator?.hardwareConcurrency) || 0 };
+    gpu: Math.round((m.find(x => x.type === 'GPU')?.memory?.workingSetSize || 0) / 1024), thermal, cores: (globalThis.navigator?.hardwareConcurrency) || 0,
+    gpuCpu: Math.round(m.find(x => x.type === 'GPU')?.cpu?.percentCPUUsage || 0), onBattery: battery };
 });
 ipcMain.handle('regie:prefer-capture', (_e, want) => { preferCap = { ...(want || {}), until: Date.now() + 20000 }; installCapture(false); return true; });
 function preferredSource(sources) {
@@ -310,6 +313,15 @@ function refreshMenu() { Menu.setApplicationMenu(buildMenu(ctx)); }
 
 ipcMain.on('regie:info', e => { e.returnValue = { version: app.getVersion(), platform: process.platform, packaged, dataDir, mediaDir }; });
 ipcMain.on('regie:restart-update', () => updater?.restart());
+ipcMain.on('regie:open-journals', () => { const d = path.join(dataDir, 'journaux'); fs.mkdirSync(d, { recursive: true }); shell.openPath(d); });
+/** Fiche de l'ordinateur pour l'enregistreur de diagnostic : système, écrans, carte graphique, réglages d'affichage. */
+ipcMain.handle('regie:machine-info', async () => {
+  let gpu = null; try { const g = await app.getGPUInfo('basic'); gpu = (g.gpuDevice || []).map(d => ({ vendor: d.vendorId, device: d.deviceId, active: d.active, driver: d.driverVersion })); } catch { /* indisponible */ }
+  return { version: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome, platform: process.platform, arch: process.arch,
+    os: os.release(), cpuModel: os.cpus()[0]?.model || '', cores: os.cpus().length, ramGo: Math.round(os.totalmem() / 1073741824),
+    displays: screen.getAllDisplays().map(d => ({ label: d.label, w: d.size.width, h: d.size.height, scale: d.scaleFactor, hz: d.displayFrequency, internal: d.internal, primary: d.id === screen.getPrimaryDisplay().id })),
+    gpu, gpuStatus: app.getGPUFeatureStatus?.(), settings: { gfx: settings.gfx, hwDecode: settings.hwDecode, outFs: settings.outFs } };
+});
 
 app.on('second-instance', () => { if (regieWin) { if (regieWin.isMinimized()) regieWin.restore(); regieWin.focus(); } });
 app.on('window-all-closed', () => app.quit());

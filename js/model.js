@@ -144,6 +144,21 @@ export function defaultShow() {
 }
 
 /** Complète un show chargé (fichier ancien ou incomplet) pour que le reste du code n'ait rien à vérifier. */
+/** Transitions de « Envoyer à la sortie » (id = valeur de show.take.mode et de live.layers[x].tr). */
+export const TRANSITIONS = [
+  { id: 'fade', name: 'Fondu', hint: 'Fondu enchaîné : l\'ancienne image s\'efface pendant que la nouvelle apparaît' },
+  { id: 'cut', name: 'Coupure', hint: 'Changement instantané, sans transition' },
+  { id: 'dip', name: 'Par le noir', hint: 'L\'ancienne image descend au noir, puis la nouvelle monte' },
+  { id: 'wipe', name: 'Volet →', hint: 'La nouvelle image recouvre l\'ancienne de gauche à droite' },
+  { id: 'wipedown', name: 'Volet ↓', hint: 'La nouvelle image recouvre l\'ancienne de haut en bas' },
+  { id: 'slide', name: 'Glisser ←', hint: 'La nouvelle image pousse l\'ancienne vers la gauche' },
+  { id: 'iris', name: 'Iris', hint: 'La nouvelle image s\'ouvre en cercle depuis le centre' },
+  { id: 'zoom', name: 'Zoom', hint: 'La nouvelle image arrive en zoomant pendant que l\'ancienne s\'efface en grossissant' },
+];
+const TR_CODE = { fade: 0, cut: 0, dip: 0, wipe: 1, wipedown: 2, slide: 3, iris: 4, zoom: 5 };
+/** Code de la transition pour le moteur (0 = simple fondu d'opacité). */
+export const transitionCode = id => TR_CODE[id] || 0;
+
 export function normalizeShow(s) {
   const d = defaultShow();
   if (!s || typeof s !== 'object' || !Array.isArray(s.layers) || !s.layers.length) return d;
@@ -157,7 +172,7 @@ export function normalizeShow(s) {
   show.master = { opacity: clamp(+(show.master?.opacity ?? 1), 0, 1) };
   show.customOut = show.customOut === true;
   // Transition de « Envoyer à la sortie » : fondu (durée en s) ou coupure franche.
-  show.take = { mode: show.take?.mode === 'cut' ? 'cut' : 'fade', dur: clamp(+show.take?.dur >= 0 ? +show.take.dur : 0.5, 0, 10) };      // false : la sortie reproduit la composition telle quelle
+  show.take = { mode: TRANSITIONS.some(t => t.id === show.take?.mode) ? show.take.mode : 'fade', dur: clamp(+show.take?.dur >= 0 ? +show.take.dur : 0.5, 0, 10) };      // false : la sortie reproduit la composition telle quelle
   show.audioOut = typeof show.audioOut === 'string' ? show.audioOut : '';          // périphérique de sortie du son ('' = celui du Mac)
   show.audioOutLabel = typeof show.audioOutLabel === 'string' ? show.audioOutLabel : '';
   show.clips = show.clips && typeof show.clips === 'object' ? show.clips : {};
@@ -192,6 +207,8 @@ export function normalizeShow(s) {
   show.pool = (Array.isArray(show.pool) ? show.pool : []).filter((id, i, a) => show.clips[id] && a.indexOf(id) === i);   // éléments créés (texte, effet, diaporama…) rangés dans la médiathèque
   // Médiathèque du show : noms des fichiers (media/), « doc:<id> », « ppt:<nom> ». null = show ancien : tout le dossier est visible.
   show.files = Array.isArray(show.files) ? show.files.filter((f, i, a) => typeof f === 'string' && f && a.indexOf(f) === i) : null;
+  // Ordre de la médiathèque choisi à la main (shows anciens sans « files » ; sinon c'est l'ordre de « files » qui compte).
+  show.libOrder = Array.isArray(show.libOrder) ? show.libOrder.filter((f, i, a) => typeof f === 'string' && f && a.indexOf(f) === i) : [];
   show.keys = (Array.isArray(show.keys) ? show.keys : []).filter(k => k && k.code && k.action).map(k => ({ code: String(k.code), shift: !!k.shift, alt: !!k.alt, meta: !!k.meta, action: String(k.action), target: k.target == null ? '' : String(k.target), scene: show.scenes.some(s => s.id === k.scene) ? k.scene : '' }));   // scene : '' = valable dans toutes les scènes
   // Sorties : la principale (id 'main' = la LED, avec le mapping) + d'autres écrans (retour conférenciers, autre salle…).
   // Chaque sortie montre toute la composition ou une seule zone en plein cadre, sans les calques listés dans `hidden`.
